@@ -171,9 +171,6 @@ class Dagger:
             self.current_rewards = self.current_rewards * not_dones.unsqueeze(1)
             self.current_lengths = self.current_lengths * not_dones
 
-            if log_counter % 10000 == 0 and log_counter > 10:
-                breakpoint()
-
     def get_actions(self, obs, policy_type):
         if policy_type == "student":
             batch_dict = {
