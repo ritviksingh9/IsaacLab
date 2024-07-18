@@ -155,8 +155,9 @@ class ShadowHandCameraEnv(DirectRLEnv):
 
         with torch.no_grad():
             for i in range(0, self.num_envs, self.batch_size):
-                embeddings = self.model(transformed_img[i:i+self.batch_size]).view(self.batch_size, -1)
-                self.embeddings[i:i+self.batch_size, :] = embeddings
+                bound = min(self.batch_size+i, self.num_envs)
+                embeddings = self.model(transformed_img[i:bound]).view(bound-i, -1)
+                self.embeddings[i:bound, :] = embeddings
 
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
