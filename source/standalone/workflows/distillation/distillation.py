@@ -98,12 +98,12 @@ class Dagger:
         self.nn_dir = os.path.join(self.experiment_dir, "nn")
         self.summaries_dir = os.path.join(self.experiment_dir, "summaries")
 
-        # os.makedirs(self.train_dir, exist_ok=True)
-        # os.makedirs(self.experiment_dir, exist_ok=True)
-        # os.makedirs(self.nn_dir, exist_ok=True)
-        # os.makedirs(self.summaries_dir, exist_ok=True)
+        os.makedirs(self.train_dir, exist_ok=True)
+        os.makedirs(self.experiment_dir, exist_ok=True)
+        os.makedirs(self.nn_dir, exist_ok=True)
+        os.makedirs(self.summaries_dir, exist_ok=True)
 
-        # self.writer = SummaryWriter(self.summaries_dir)
+        self.writer = SummaryWriter(self.summaries_dir)
 
 
 
@@ -135,19 +135,28 @@ class Dagger:
 
         log_counter = 0
 
-        while True:
+        while log_counter < 100000:
             with torch.no_grad():
                 actions_teacher = self.get_actions(obs, "teacher")
             actions_student = self.get_actions(obs, "student")
 
             student_loss = self.loss(actions_student["mus"], actions_teacher["mus"])
-            
+            if self.game_rewards.current_size > 0:
+                mean_rewards = self.game_rewards.get_mean()
+                mean_lengths = self.game_lengths.get_mean()
+                self.mean_rewards = mean_rewards[0]
+                for i in range(self.value_size):
+                    rewards_name = "rewards" if i == 0 else "rewards{0}".format(i)
+                    self.writer.add_scalar(
+                        rewards_name + "/step", mean_rewards[i], self.frame
+                    )
+                    self.writer.add_scalar(
+                        "average consecutive successes", self.ov_env.consecutive_successes.cpu().numpy()[0], self.frame
+                    )
+
             if log_counter % 10 == 0:
                 print("Loss: ", student_loss)
                 if self.game_rewards.current_size > 0:
-                    mean_rewards = self.game_rewards.get_mean()
-                    mean_lengths = self.game_lengths.get_mean()
-                    self.mean_rewards = mean_rewards[0]
                     print("\tMean Rewards: ", mean_rewards)
                     print("\tMean Length: ", mean_lengths)
                 
@@ -160,6 +169,7 @@ class Dagger:
             self.optimizer.step()
 
             obs, rew, out_of_reach, timed_out, info = self.env.step(actions_student["actions"].detach())
+            self.frame += self.num_envs
             self.current_rewards += rew.unsqueeze(-1)
             self.current_lengths += 1
             self.dones = out_of_reach | timed_out
@@ -170,6 +180,10 @@ class Dagger:
             not_dones = 1.0 - self.dones.float()
             self.current_rewards = self.current_rewards * not_dones.unsqueeze(1)
             self.current_lengths = self.current_lengths * not_dones
+
+            if log_counter % 10000 == 0 and log_counter > 10:
+                self.optimizer.param_groups[0]["lr"] /= 1.5
+                # breakpoint()
 
     def get_actions(self, obs, policy_type):
         if policy_type == "student":
@@ -215,7 +229,8 @@ class Dagger:
             model = self.student_model
             self.epoch_num = weights.get('epoch', 0)
             # self.optimizer.load_state_dict(weights['optimizer'])
-            self.frame = weights.get('frame', 0)
+            # self.frame = weights.get('frame', 0)
+            self.frame = 0
         else:
             model = self.teacher_model
         model.load_state_dict(weights["model"])
