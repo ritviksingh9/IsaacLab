@@ -164,41 +164,10 @@ class Dagger:
                     self.loss(actions_student["mus"], actions_teacher["mus"]) +
                     self.loss(actions_student["sigmas"], actions_teacher["sigmas"])
                 )
+                aux_loss = None
                 total_loss = student_loss
 
-            if self.game_rewards.current_size > 0:
-                mean_rewards = self.game_rewards.get_mean()
-                mean_lengths = self.game_lengths.get_mean()
-                self.mean_rewards = mean_rewards[0]
-                for i in range(self.value_size):
-                    rewards_name = "rewards" if i == 0 else "rewards{0}".format(i)
-                    self.writer.add_scalar(
-                        rewards_name + "/step", mean_rewards[i], self.frame
-                    )
-                    self.writer.add_scalar(
-                        "average consecutive successes", self.ov_env.consecutive_successes.cpu().numpy()[0], self.frame
-                    )
-                    self.writer.add_scalar(
-                        "total_loss", total_loss.detach().cpu().numpy(), self.frame
-                    )
-                    self.writer.add_scalar(
-                        "imitation_loss", student_loss.detach().cpu().numpy(), self.frame
-                    )
-                    if self.use_aux:
-                        self.writer.add_scalar(
-                            "aux_loss", aux_loss.detach().cpu().numpy(), self.frame
-                        )
-
-            if log_counter % 10 == 0:
-                print("="*10)
-                print("Imitation Loss: ", student_loss)
-                if self.use_aux:
-                    print("Aux Loss: ", aux_loss)
-                print("Total Loss: ", total_loss)
-                if self.game_rewards.current_size > 0:
-                    print("\tMean Rewards: ", mean_rewards)
-                    print("\tMean Length: ", mean_lengths)
-                    print("\tConsecutive Successes: ", self.ov_env.consecutive_successes)
+            self.log_information(log_counter, total_loss, aux_loss)
                 
             log_counter += 1
 
@@ -222,7 +191,7 @@ class Dagger:
             self.current_lengths += 1
             self.dones = out_of_reach | timed_out
             all_done_indices = self.dones.nonzero(as_tuple=False)
-            done_indices = all_done_indices[:: self.num_envs]
+            done_indices = all_done_indices[:]
             self.game_rewards.update(self.current_rewards[done_indices])
             self.game_lengths.update(self.current_lengths[done_indices])
             not_dones = 1.0 - self.dones.float()
@@ -232,6 +201,43 @@ class Dagger:
             if log_counter % 10000 == 0 and log_counter > 10:
                 self.optimizer.param_groups[0]["lr"] /= 1.3
                 # breakpoint()
+
+    def log_information(self, log_counter, total_loss, aux_loss=None):
+        student_loss = total_loss if aux_loss is None else total_loss - aux_loss
+        
+        if self.game_rewards.current_size > 0:
+            mean_rewards = self.game_rewards.get_mean()
+            mean_lengths = self.game_lengths.get_mean()
+            self.mean_rewards = mean_rewards[0]
+            for i in range(self.value_size):
+                rewards_name = "rewards" if i == 0 else "rewards{0}".format(i)
+                self.writer.add_scalar(
+                    rewards_name + "/step", mean_rewards[i], self.frame
+                )
+                self.writer.add_scalar(
+                    "average consecutive successes", self.ov_env.consecutive_successes.cpu().numpy()[0], self.frame
+                )
+                self.writer.add_scalar(
+                    "total_loss", total_loss.detach().cpu().numpy(), self.frame
+                )
+                self.writer.add_scalar(
+                    "imitation_loss", student_loss.detach().cpu().numpy(), self.frame
+                )
+                if aux_loss is not None:
+                    self.writer.add_scalar(
+                        "aux_loss", aux_loss.detach().cpu().numpy(), self.frame
+                    )
+
+        if log_counter % 10 == 0:
+            print("="*10)
+            print("Imitation Loss: ", student_loss)
+            if self.use_aux:
+                print("Aux Loss: ", aux_loss)
+            print("Total Loss: ", total_loss)
+            if self.game_rewards.current_size > 0:
+                print("\tMean Rewards: ", mean_rewards)
+                print("\tMean Length: ", mean_lengths)
+                print("\tConsecutive Successes: ", self.ov_env.consecutive_successes)
 
     def get_actions(self, obs, policy_type):
         if policy_type == "student":
