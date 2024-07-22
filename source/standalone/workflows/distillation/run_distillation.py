@@ -76,20 +76,24 @@ def main():
     num_teacher_obs = ov_env.num_teacher_observations
     num_actions = ov_env.num_actions
     student_ckpt = "/home/ritviks/workspace/git/IsaacLab/logs/rl_games/shadow_hand/2024-07-16_09-14-35/nn/last_shadow_hand_ep_200_rew_193.61156.pth"
+    student_ckpt = None
     teacher_ckpt = "/home/ritviks/workspace/git/IsaacLab/logs/rl_games/shadow_hand/2024-07-13_09-40-24/nn/last_shadow_hand_ep_5000_rew__9368.466_.pth"
 
     dagger_config = {
         "student": {
             "cfg": student_cfg,
             "ckpt": student_ckpt,
+            "obs_type": "policy",
         },
         "teacher": {
             "cfg": teacher_cfg,
             "ckpt": teacher_ckpt,
+            "obs_type": "expert_policy",
         },
     }
-    dagger = Dagger(env, dagger_config)
+    dagger = Dagger(env, dagger_config, use_aux=True)
     dagger.distill()
+    dagger.save("shadow_hand_distilled_v3")
     breakpoint()
 
 if __name__ == "__main__":

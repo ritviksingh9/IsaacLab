@@ -42,7 +42,7 @@ def rescale_actions(low, high, action):
 
 
 class Dagger:
-    def __init__(self, env, config, device="cuda:0"):
+    def __init__(self, env, config, use_aux=False, device="cuda:0"):
         self.env = env
         self.ov_env = env.env
         self.num_envs = self.ov_env.num_envs
@@ -59,8 +59,13 @@ class Dagger:
         self.normalize_input = self.student_network_params["config"]["normalize_input"]
 
         # get student and teacher models
+        self.use_aux = use_aux
+        self.num_actions_student = self.num_actions
+        if self.use_aux:
+            self.num_aux = 3
+            self.num_actions_student += self.num_aux
         self.student_model_config = {
-            "actions_num": self.num_actions,
+            "actions_num": self.num_actions_student,
             "input_shape": (self.ov_env.num_observations,),
             "num_seqs": self.num_envs,
             "value_size": self.value_size,
@@ -77,13 +82,19 @@ class Dagger:
         }
         self.student_model = self.student_network.build(self.student_model_config).to(self.device)
         self.teacher_model = self.teacher_network.build(self.teacher_model_config).to(self.device)
-        self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=1e-3, eps=1e-8)
+        self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=2e-3, eps=1e-8)
         # load weights for student and teacher
-        self.set_weights(self.config["student"]["ckpt"], "student")
+        if self.config["student"]["ckpt"] is not None:
+            self.set_weights(self.config["student"]["ckpt"], "student")
         self.set_weights(self.config["teacher"]["ckpt"], "teacher")
+        # get the observation type of the student and teacher
+        self.student_obs_type = self.config["student"]["obs_type"]
+        self.teacher_obs_type = self.config["teacher"]["obs_type"]
 
         # logging
         self.games_to_track = 100
+        self.frame = 0
+        self.epoch_num = 0
         self.game_rewards = torch_ext.AverageMeter(
             self.value_size, self.games_to_track
         ).to(self.device)
@@ -111,7 +122,8 @@ class Dagger:
 
     def init_tensors(self):
         # dummy variable so that calculating neglogp doesn't give error (we don't care about the value)
-        self.prev_actions = torch.zeros((self.num_envs, self.num_actions), dtype=torch.float32).to(self.device)
+        self.prev_actions_student = torch.zeros((self.num_envs, self.num_actions_student), dtype=torch.float32).to(self.device)
+        self.prev_actions_teacher = torch.zeros((self.num_envs, self.num_actions), dtype=torch.float32).to(self.device)
 
         self.current_rewards = torch.zeros(
             (self.num_envs, self.value_size), dtype=torch.float32, device=self.device
@@ -129,7 +141,7 @@ class Dagger:
         self.student_model.train()
         self.teacher_model.eval()
 
-        actions = self.prev_actions.clone()
+        # actions = self.prev_actions.clone()
 
         obs = self.env.reset()[0]
 
@@ -140,7 +152,20 @@ class Dagger:
                 actions_teacher = self.get_actions(obs, "teacher")
             actions_student = self.get_actions(obs, "student")
 
-            student_loss = self.loss(actions_student["mus"], actions_teacher["mus"])
+            if self.use_aux:
+                student_loss = (
+                    self.loss(actions_student["mus"][:, :-self.num_aux], actions_teacher["mus"]) +
+                    self.loss(actions_student["sigmas"][:, :-self.num_aux], actions_teacher["sigmas"])
+                )
+                aux_loss = self.loss(actions_student["mus"][:, -self.num_aux:], obs["aux_info"]["cube_pos"])
+                total_loss = student_loss + 10*aux_loss
+            else:
+                student_loss = (
+                    self.loss(actions_student["mus"], actions_teacher["mus"]) +
+                    self.loss(actions_student["sigmas"], actions_teacher["sigmas"])
+                )
+                total_loss = student_loss
+
             if self.game_rewards.current_size > 0:
                 mean_rewards = self.game_rewards.get_mean()
                 mean_lengths = self.game_lengths.get_mean()
@@ -153,22 +178,45 @@ class Dagger:
                     self.writer.add_scalar(
                         "average consecutive successes", self.ov_env.consecutive_successes.cpu().numpy()[0], self.frame
                     )
+                    self.writer.add_scalar(
+                        "total_loss", total_loss.detach().cpu().numpy(), self.frame
+                    )
+                    self.writer.add_scalar(
+                        "imitation_loss", student_loss.detach().cpu().numpy(), self.frame
+                    )
+                    if self.use_aux:
+                        self.writer.add_scalar(
+                            "aux_loss", aux_loss.detach().cpu().numpy(), self.frame
+                        )
 
             if log_counter % 10 == 0:
-                print("Loss: ", student_loss)
+                print("="*10)
+                print("Imitation Loss: ", student_loss)
+                if self.use_aux:
+                    print("Aux Loss: ", aux_loss)
+                print("Total Loss: ", total_loss)
                 if self.game_rewards.current_size > 0:
                     print("\tMean Rewards: ", mean_rewards)
                     print("\tMean Length: ", mean_lengths)
+                    print("\tConsecutive Successes: ", self.ov_env.consecutive_successes)
                 
             log_counter += 1
 
             for param in self.student_model.parameters():
                 param.grad = None
 
-            student_loss.backward()
+            total_loss.backward()
             self.optimizer.step()
+            
+            if self.use_aux:
+                obs, rew, out_of_reach, timed_out, info = self.env.step(
+                    actions_student["actions"][:, :-self.num_aux].detach()
+                )
+            else:
+                obs, rew, out_of_reach, timed_out, info = self.env.step(
+                    actions_student["actions"].detach()
+                )
 
-            obs, rew, out_of_reach, timed_out, info = self.env.step(actions_student["actions"].detach())
             self.frame += self.num_envs
             self.current_rewards += rew.unsqueeze(-1)
             self.current_lengths += 1
@@ -182,15 +230,15 @@ class Dagger:
             self.current_lengths = self.current_lengths * not_dones
 
             if log_counter % 10000 == 0 and log_counter > 10:
-                self.optimizer.param_groups[0]["lr"] /= 1.5
+                self.optimizer.param_groups[0]["lr"] /= 1.3
                 # breakpoint()
 
     def get_actions(self, obs, policy_type):
         if policy_type == "student":
             batch_dict = {
                 "is_train": True,
-                "obs": obs["policy"],
-                "prev_actions": self.prev_actions,
+                "obs": obs[self.student_obs_type],
+                "prev_actions": self.prev_actions_student,
             }
             res_dict = self.student_model(batch_dict)
             mus = res_dict["mus"]
@@ -198,8 +246,8 @@ class Dagger:
         else:
             batch_dict = {
                 "is_train": False,
-                "obs": obs["expert_policy"],
-                "prev_actions": self.prev_actions,
+                "obs": obs[self.teacher_obs_type],
+                "prev_actions": self.prev_actions_teacher,
             }
             res_dict = self.teacher_model(batch_dict)
             mus = res_dict["mus"]
@@ -227,10 +275,9 @@ class Dagger:
         weights = torch_ext.load_checkpoint(ckpt)
         if policy_type == "student":
             model = self.student_model
-            self.epoch_num = weights.get('epoch', 0)
+            # self.epoch_num = weights.get('epoch', 0)
             # self.optimizer.load_state_dict(weights['optimizer'])
             # self.frame = weights.get('frame', 0)
-            self.frame = 0
         else:
             model = self.teacher_model
         model.load_state_dict(weights["model"])
