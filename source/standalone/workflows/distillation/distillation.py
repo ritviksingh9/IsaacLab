@@ -55,6 +55,7 @@ class Dagger:
         self.teacher_network = self.load_networks(self.teacher_network_params)
 
         self.value_size = 1
+        self.horizon_length = self.student_network_params["config"]["horizon_length"]
         self.normalize_value = self.student_network_params["config"]["normalize_value"]
         self.normalize_input = self.student_network_params["config"]["normalize_input"]
 
@@ -67,6 +68,7 @@ class Dagger:
         self.student_model_config = {
             "actions_num": self.num_actions_student,
             "input_shape": (self.ov_env.num_observations,),
+            # "num_seqs": self.horizon_length // self.student_network_params["config"]["seq_length"],
             "num_seqs": self.num_envs,
             "value_size": self.value_size,
             'normalize_value': self.normalize_value, 
@@ -82,7 +84,7 @@ class Dagger:
         }
         self.student_model = self.student_network.build(self.student_model_config).to(self.device)
         self.teacher_model = self.teacher_network.build(self.teacher_model_config).to(self.device)
-        self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=2e-3, eps=1e-8)
+        self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=1e-3, eps=1e-8)
         # load weights for student and teacher
         if self.config["student"]["ckpt"] is not None:
             self.set_weights(self.config["student"]["ckpt"], "student")
@@ -90,6 +92,9 @@ class Dagger:
         # get the observation type of the student and teacher
         self.student_obs_type = self.config["student"]["obs_type"]
         self.teacher_obs_type = self.config["teacher"]["obs_type"]
+        self.is_rnn = self.student_model.is_rnn()
+        if self.is_rnn:
+            self.seq_length = self.student_network_params["config"]["seq_length"]
 
         # logging
         self.games_to_track = 100
@@ -116,8 +121,6 @@ class Dagger:
 
         self.writer = SummaryWriter(self.summaries_dir)
 
-
-
         self.init_tensors()
 
     def init_tensors(self):
@@ -135,7 +138,10 @@ class Dagger:
             (self.num_envs,), dtype=torch.uint8, device=self.device
         )
 
-
+        if self.is_rnn:
+            self.student_hidden_states = self.student_model.get_default_rnn_state()
+            self.student_hidden_states = [s.to(self.device) for s in self.student_hidden_states]
+            self.num_seqs = self.horizon_length // self.seq_length
 
     def distill(self):
         self.student_model.train()
@@ -146,6 +152,10 @@ class Dagger:
         obs = self.env.reset()[0]
 
         log_counter = 0
+        total_loss = 0.
+
+        for param in self.student_model.parameters():
+            param.grad = None
 
         while log_counter < 100000:
             with torch.no_grad():
@@ -158,24 +168,33 @@ class Dagger:
                     self.loss(actions_student["sigmas"][:, :-self.num_aux], actions_teacher["sigmas"])
                 )
                 aux_loss = self.loss(actions_student["mus"][:, -self.num_aux:], obs["aux_info"]["cube_pos"])
-                total_loss = student_loss + 10*aux_loss
+                total_loss += student_loss + aux_loss
             else:
                 student_loss = (
                     self.loss(actions_student["mus"], actions_teacher["mus"]) +
                     self.loss(actions_student["sigmas"], actions_teacher["sigmas"])
                 )
                 aux_loss = None
-                total_loss = student_loss
+                total_loss += student_loss
 
             self.log_information(log_counter, total_loss, aux_loss)
                 
             log_counter += 1
 
-            for param in self.student_model.parameters():
-                param.grad = None
-
-            total_loss.backward()
-            self.optimizer.step()
+            if self.is_rnn:
+                if log_counter % self.seq_length == 0:
+                    total_loss.backward()
+                    self.optimizer.step()
+                    for param in self.student_model.parameters():
+                        param.grad = None
+                    for s in self.student_hidden_states:
+                        s = s.detach()
+                    total_loss = 0.
+            else:
+                for param in self.student_model.parameters():
+                    param.grad = None
+                total_loss.backward()
+                self.optimizer.step()
             
             if self.use_aux:
                 obs, rew, out_of_reach, timed_out, info = self.env.step(
@@ -191,6 +210,11 @@ class Dagger:
             self.current_lengths += 1
             self.dones = out_of_reach | timed_out
             all_done_indices = self.dones.nonzero(as_tuple=False)
+
+            if self.is_rnn and len(all_done_indices) > 0:
+                for s in self.student_hidden_states:
+                    s[:, all_done_indices, ...] *= 0.
+
             done_indices = all_done_indices[:]
             self.game_rewards.update(self.current_rewards[done_indices])
             self.game_lengths.update(self.current_lengths[done_indices])
@@ -199,7 +223,7 @@ class Dagger:
             self.current_lengths = self.current_lengths * not_dones
 
             if log_counter % 10000 == 0 and log_counter > 10:
-                self.optimizer.param_groups[0]["lr"] /= 1.3
+                self.optimizer.param_groups[0]["lr"] /= 1.5
                 # breakpoint()
 
     def log_information(self, log_counter, total_loss, aux_loss=None):
@@ -246,9 +270,16 @@ class Dagger:
                 "obs": obs[self.student_obs_type],
                 "prev_actions": self.prev_actions_student,
             }
+            if self.is_rnn:
+                batch_dict["rnn_states"] = self.student_hidden_states
+                batch_dict["seq_length"] = 1
+                batch_dict["rnn_masks"] = None
             res_dict = self.student_model(batch_dict)
             mus = res_dict["mus"]
             sigmas = res_dict["sigmas"]
+            self.student_hidden_states = res_dict["rnn_states"]
+            # print("IS LEAF: ", [s.is_leaf for s in self.student_hidden_states])
+            self.student_hidden_states = [s.detach() for s in res_dict["rnn_states"]]
         else:
             batch_dict = {
                 "is_train": False,

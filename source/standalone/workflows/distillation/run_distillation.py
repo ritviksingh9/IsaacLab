@@ -69,7 +69,7 @@ def main():
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     ov_env = env.env
 
-    student_cfg = "/home/ritviks/workspace/git/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/shadow_hand/agents/rl_games_ppo_cfg.yaml"
+    student_cfg = "/home/ritviks/workspace/git/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/shadow_hand/agents/rl_games_ppo_lstm_cfg.yaml"
     teacher_cfg = "/home/ritviks/workspace/git/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/shadow_hand/agents/rl_games_ppo_cfg.yaml"
     
     num_student_obs = ov_env.num_observations
