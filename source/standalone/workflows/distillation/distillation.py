@@ -157,7 +157,7 @@ class Dagger:
         for param in self.student_model.parameters():
             param.grad = None
 
-        while log_counter < 100000:
+        while log_counter < 50000:
             with torch.no_grad():
                 actions_teacher = self.get_actions(obs, "teacher")
             actions_student = self.get_actions(obs, "student")
@@ -195,6 +195,7 @@ class Dagger:
                     param.grad = None
                 total_loss.backward()
                 self.optimizer.step()
+                total_loss = 0.
             
             if self.use_aux:
                 obs, rew, out_of_reach, timed_out, info = self.env.step(
@@ -277,9 +278,8 @@ class Dagger:
             res_dict = self.student_model(batch_dict)
             mus = res_dict["mus"]
             sigmas = res_dict["sigmas"]
-            self.student_hidden_states = res_dict["rnn_states"]
-            # print("IS LEAF: ", [s.is_leaf for s in self.student_hidden_states])
-            self.student_hidden_states = [s.detach() for s in res_dict["rnn_states"]]
+            if self.is_rnn:
+                self.student_hidden_states = [s.detach() for s in res_dict["rnn_states"]]
         else:
             batch_dict = {
                 "is_train": False,
