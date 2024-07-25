@@ -21,6 +21,7 @@ from rl_games.algos_torch.a2c_continuous import A2CAgent
 from rl_games.algos_torch.model_builder import ModelBuilder
 from datetime import datetime
 from tensorboardX import SummaryWriter
+import wandb
 
 
 from typing import Dict
@@ -120,6 +121,9 @@ class Dagger:
         os.makedirs(self.summaries_dir, exist_ok=True)
 
         self.writer = SummaryWriter(self.summaries_dir)
+        self.use_wandb = False
+        if self.use_wandb:
+            wandb.init(project="DexE2E", sync_tensorboard=True)
 
         self.init_tensors()
 
@@ -202,8 +206,12 @@ class Dagger:
                     actions_student["actions"][:, :-self.num_aux].detach()
                 )
             else:
+                if log_counter > 10000:
+                    stepping_actions = actions_student
+                else:
+                    stepping_actions = actions_teacher
                 obs, rew, out_of_reach, timed_out, info = self.env.step(
-                    actions_student["actions"].detach()
+                    stepping_actions["actions"].detach()
                 )
 
             self.frame += self.num_envs
@@ -226,6 +234,9 @@ class Dagger:
             if log_counter % 10000 == 0 and log_counter > 10:
                 self.optimizer.param_groups[0]["lr"] /= 1.5
                 # breakpoint()
+
+        if self.use_wandb:
+            wandb.finish()
 
     def log_information(self, log_counter, total_loss, aux_loss=None):
         student_loss = total_loss if aux_loss is None else total_loss - aux_loss

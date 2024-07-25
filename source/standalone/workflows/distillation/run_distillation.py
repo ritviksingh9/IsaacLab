@@ -45,6 +45,7 @@ from datetime import datetime
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.algo_observer import IsaacAlgoObserver
 from rl_games.torch_runner import Runner
+from rl_games.algos_torch import model_builder
 
 from omni.isaac.lab.utils.dict import print_dict
 from omni.isaac.lab.utils.io import dump_pickle, dump_yaml
@@ -54,6 +55,7 @@ from omni.isaac.lab_tasks.utils import load_cfg_from_registry, parse_env_cfg
 from omni.isaac.lab_tasks.utils.wrappers.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 from rl_games_actor import AgentRLG
 from distillation import Dagger
+from complex_net import A2CBuilder as ComplexNetworkBuilder
 
 
 def main():
@@ -92,6 +94,7 @@ def main():
             "obs_type": "expert_policy",
         },
     }
+    model_builder.register_network("complex_net", ComplexNetworkBuilder)
     dagger = Dagger(env, dagger_config, use_aux=False)
     dagger.distill()
     dagger.save("sh_dist_no_vel_ff")
