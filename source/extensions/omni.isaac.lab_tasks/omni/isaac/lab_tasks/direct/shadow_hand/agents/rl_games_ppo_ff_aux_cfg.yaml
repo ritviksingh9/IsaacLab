@@ -15,7 +15,7 @@ params:
     name: continuous_a2c_logstd
 
   network:
-    name: complex_net
+    name: a2c_aux_net
     separate: False
 
     space:
@@ -37,6 +37,21 @@ params:
         name: default
       regularizer:
         name: None
+
+    aux_network: 
+      mlp:
+        units: [512, 256]
+        activation: elu
+        out_activation: None # just nn linear layer on output
+        d2rl: False
+
+        initializer:
+          name: default
+        regularizer:
+          name: None
+
+    aux_outputs:
+      cube_random_params: {}
 
   load_checkpoint: False # flag which sets whether to load the checkpoint
   load_path: '' # path to the checkpoint to load

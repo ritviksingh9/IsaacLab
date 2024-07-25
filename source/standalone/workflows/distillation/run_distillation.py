@@ -56,6 +56,7 @@ from omni.isaac.lab_tasks.utils.wrappers.rl_games import RlGamesGpuEnv, RlGamesV
 from rl_games_actor import AgentRLG
 from distillation import Dagger
 from complex_net import A2CBuilder as ComplexNetworkBuilder
+from a2c_with_aux import A2CBuilder as A2CWithAuxBuilder
 
 
 def main():
@@ -95,6 +96,7 @@ def main():
         },
     }
     model_builder.register_network("complex_net", ComplexNetworkBuilder)
+    model_builder.register_network("a2c_aux_net", A2CWithAuxBuilder)
     dagger = Dagger(env, dagger_config, use_aux=False)
     dagger.distill()
     dagger.save("sh_dist_no_vel_ff")
