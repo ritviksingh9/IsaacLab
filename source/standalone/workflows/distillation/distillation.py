@@ -61,11 +61,7 @@ class Dagger:
         self.normalize_input = self.student_network_params["config"]["normalize_input"]
 
         # get student and teacher models
-        self.use_aux = use_aux
         self.num_actions_student = self.num_actions
-        if self.use_aux:
-            self.num_aux = 3
-            self.num_actions_student += self.num_aux
         self.student_model_config = {
             "actions_num": self.num_actions_student,
             "input_shape": (self.ov_env.num_observations,),
@@ -96,6 +92,10 @@ class Dagger:
         self.is_rnn = self.student_model.is_rnn()
         if self.is_rnn:
             self.seq_length = self.student_network_params["config"]["seq_length"]
+        if hasattr(self.student_model.a2c_network, "is_aux") and self.student_model.a2c_network.is_aux:
+            self.is_aux = True
+        else:
+            self.is_aux = False
 
         # logging
         self.games_to_track = 100
@@ -161,25 +161,27 @@ class Dagger:
         for param in self.student_model.parameters():
             param.grad = None
 
-        while log_counter < 50000:
+        num_iters = 50000
+
+        while log_counter < num_iters:
+            beta = max(1 - log_counter / (num_iters / 2), 0)
+
             with torch.no_grad():
                 actions_teacher = self.get_actions(obs, "teacher")
             actions_student = self.get_actions(obs, "student")
+            aux_loss = 0.
 
-            if self.use_aux:
-                student_loss = (
-                    self.loss(actions_student["mus"][:, :-self.num_aux], actions_teacher["mus"]) +
-                    self.loss(actions_student["sigmas"][:, :-self.num_aux], actions_teacher["sigmas"])
-                )
-                aux_loss = self.loss(actions_student["mus"][:, -self.num_aux:], obs["aux_info"]["cube_pos"])
-                total_loss += student_loss + aux_loss
-            else:
-                student_loss = (
-                    self.loss(actions_student["mus"], actions_teacher["mus"]) +
-                    self.loss(actions_student["sigmas"], actions_teacher["sigmas"])
-                )
-                aux_loss = None
-                total_loss += student_loss
+            if actions_student["aux"] is not None:
+                aux_out = actions_student["aux"]
+                aux_gt = obs["aux_info"]
+                for aux_name in aux_out.keys():
+                    aux_loss += self.loss(aux_out[aux_name], aux_gt[aux_name].reshape(self.num_envs, -1))
+
+            student_loss = (
+                self.loss(actions_student["mus"], actions_teacher["mus"]) +
+                self.loss(actions_student["sigmas"], actions_teacher["sigmas"])
+            )
+            total_loss += student_loss + aux_loss
 
             self.log_information(log_counter, total_loss, aux_loss)
                 
@@ -201,18 +203,10 @@ class Dagger:
                 self.optimizer.step()
                 total_loss = 0.
             
-            if self.use_aux:
-                obs, rew, out_of_reach, timed_out, info = self.env.step(
-                    actions_student["actions"][:, :-self.num_aux].detach()
-                )
-            else:
-                if log_counter > 10000:
-                    stepping_actions = actions_student
-                else:
-                    stepping_actions = actions_teacher
-                obs, rew, out_of_reach, timed_out, info = self.env.step(
-                    stepping_actions["actions"].detach()
-                )
+            stepping_actions = actions_student["actions"]
+            obs, rew, out_of_reach, timed_out, info = self.env.step(
+                stepping_actions.detach()
+            )
 
             self.frame += self.num_envs
             self.current_rewards += rew.unsqueeze(-1)
@@ -259,7 +253,7 @@ class Dagger:
                 self.writer.add_scalar(
                     "imitation_loss", student_loss.detach().cpu().numpy(), self.frame
                 )
-                if aux_loss is not None:
+                if self.is_aux:
                     self.writer.add_scalar(
                         "aux_loss", aux_loss.detach().cpu().numpy(), self.frame
                     )
@@ -267,7 +261,7 @@ class Dagger:
         if log_counter % 10 == 0:
             print("="*10)
             print("Imitation Loss: ", student_loss)
-            if self.use_aux:
+            if self.is_aux:
                 print("Aux Loss: ", aux_loss)
             print("Total Loss: ", total_loss)
             if self.game_rewards.current_size > 0:
@@ -276,6 +270,7 @@ class Dagger:
                 print("\tConsecutive Successes: ", self.ov_env.consecutive_successes)
 
     def get_actions(self, obs, policy_type):
+        aux = None
         if policy_type == "student":
             batch_dict = {
                 "is_train": True,
@@ -291,6 +286,8 @@ class Dagger:
             sigmas = res_dict["sigmas"]
             if self.is_rnn:
                 self.student_hidden_states = [s.detach() for s in res_dict["rnn_states"]]
+            if self.is_aux:
+                aux = self.student_model.a2c_network.last_aux_out
         else:
             batch_dict = {
                 "is_train": False,
@@ -306,7 +303,8 @@ class Dagger:
         return {
             "mus": mus,
             "sigmas": sigmas,
-            "actions": selected_action
+            "actions": selected_action,
+            "aux": aux
         }
     
     def loss(self, student_result, target_result):

@@ -1,4 +1,4 @@
-rom rl_games.common import object_factory
+from rl_games.common import object_factory
 from rl_games.algos_torch import torch_ext
 
 import torch
@@ -270,7 +270,7 @@ class A2CBuilder(NetworkBuilder):
             else:
                 if self.is_aux:
                     mlp_args = {
-                        'input_size': self.units + in_mlp_shape,
+                        'input_size': self.units[-1] + in_mlp_shape,
                         'units': self.aux_units,
                         'activation': self.aux_activation,
                         'norm_func_name': self.aux_network.get('normalization', None),
@@ -283,8 +283,10 @@ class A2CBuilder(NetworkBuilder):
                     self.aux_networks = nn.ModuleDict()
 
                     for output_name in self.aux_outputs:
-                        assert len(input_shape[output_name]) == 1
-                        aux_out_size = input_shape[output_name][0]
+                        # breakpoint()
+                        # assert len(input_shape[output_name]) == 1
+                        # aux_out_size = input_shape[output_name][0]
+                        aux_out_size = self.aux_heads[output_name]["size"]
                         self.aux_networks[output_name] = nn.Sequential(
                             nn.Linear(self.aux_units[-1], aux_out_size),
                             self.activations_factory.create(self.aux_out_activation)
@@ -568,6 +570,7 @@ class A2CBuilder(NetworkBuilder):
             self.is_aux = 'aux_outputs' in params
             if self.is_aux:
                 self.aux_network = params['aux_network']
+                self.aux_heads = params["aux_outputs"]
                 self.aux_outputs = list(params['aux_outputs'].keys())
 
                 self.aux_units = self.aux_network['mlp']['units']

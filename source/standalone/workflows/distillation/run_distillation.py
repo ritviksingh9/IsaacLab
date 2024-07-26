@@ -41,6 +41,7 @@ import gymnasium as gym
 import math
 import os
 from datetime import datetime
+import pathlib
 
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.algo_observer import IsaacAlgoObserver
@@ -72,16 +73,29 @@ def main():
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     ov_env = env.env
 
+    parent_path = str(pathlib.Path(__file__).parent.parent.parent.parent.parent.resolve())
+    agent_cfg_folder = "source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/shadow_hand/agents"
     # student_cfg = "/home/ritviks/workspace/git/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/shadow_hand/agents/rl_games_ppo_lstm_cfg.yaml"
-    student_cfg = "/home/ritviks/workspace/git/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/shadow_hand/agents/rl_games_ppo_cfg.yaml"
-    teacher_cfg = "/home/ritviks/workspace/git/IsaacLab/source/extensions/omni.isaac.lab_tasks/omni/isaac/lab_tasks/direct/shadow_hand/agents/rl_games_ppo_cfg.yaml"
-    
+    student_cfg = os.path.join(
+        parent_path,
+        agent_cfg_folder,
+        "rl_games_ppo_ff_aux_cfg.yaml"
+    )
+    teacher_cfg = os.path.join(
+        parent_path,
+        agent_cfg_folder,
+        "rl_games_ppo_cfg.yaml"
+    )
+
     num_student_obs = ov_env.num_observations
     num_teacher_obs = ov_env.num_teacher_observations
     num_actions = ov_env.num_actions
-    student_ckpt = "/home/ritviks/workspace/git/IsaacLab/logs/rl_games/shadow_hand/2024-07-16_09-14-35/nn/last_shadow_hand_ep_200_rew_193.61156.pth"
     student_ckpt = None
-    teacher_ckpt = "/home/ritviks/workspace/git/IsaacLab/logs/rl_games/shadow_hand/2024-07-13_09-40-24/nn/last_shadow_hand_ep_5000_rew__9368.466_.pth"
+    teacher_ckpt = "pretrained_ckpts/teacher.ckpt"
+    teacher_ckpt = os.path.join(
+        parent_path,
+        teacher_ckpt
+    )
 
     dagger_config = {
         "student": {
@@ -100,7 +114,7 @@ def main():
     dagger = Dagger(env, dagger_config, use_aux=False)
     dagger.distill()
     dagger.save("sh_dist_no_vel_ff")
-    breakpoint()
+
 
 if __name__ == "__main__":
     # run the main function
