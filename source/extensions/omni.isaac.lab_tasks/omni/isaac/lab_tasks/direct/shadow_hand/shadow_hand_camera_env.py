@@ -67,8 +67,10 @@ class ShadowHandCameraEnv(DirectRLEnv):
         self.goal_rot[:, 0] = 1.0
         self.goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.goal_pos[:, :] = torch.tensor([-0.2, -0.45, 0.68], device=self.device)
+        self.keypoints = torch.zeros((self.num_envs, 8, 3), dtype=torch.float, device=self.device)
         # initialize goal marker
         self.goal_markers = VisualizationMarkers(self.cfg.goal_object_cfg)
+        self.kpt_markers = [VisualizationMarkers(self.cfg.goal_keypoint_cfg[i]) for i in range(8)]
 
         # track successes
         self.successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -159,7 +161,6 @@ class ShadowHandCameraEnv(DirectRLEnv):
                 embeddings = self.model(transformed_img[i:bound]).view(bound-i, -1)
                 self.embeddings[i:bound, :] = embeddings
 
-
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
 
@@ -201,7 +202,8 @@ class ShadowHandCameraEnv(DirectRLEnv):
             obs = self.compute_full_observations()
         elif self.cfg.obs_type == "embedding":
             self._get_embeddings({"policy": self._tiled_camera.data.output["rgb"].clone()})
-            obs = self.compute_embeddings_observations()
+            # obs = self.compute_embeddings_observations()
+            obs = self.compute_embeddings_observation_no_vel()
         else:
             print("Unknown observations type!")
 
@@ -213,6 +215,11 @@ class ShadowHandCameraEnv(DirectRLEnv):
             observations = {"policy": obs, "critic": states}
         
         observations["expert_policy"] =  self.compute_full_observations()
+        self.keypoints = gen_keypoints(pose=torch.cat((self.object_pos, self.object_rot), dim=1))
+        aux_info = {
+            "keypoints": self.keypoints
+        }
+        observations["aux_info"] = aux_info
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
@@ -334,6 +341,8 @@ class ShadowHandCameraEnv(DirectRLEnv):
         goal_pos = self.goal_pos + self.scene.env_origins
         if self.visualize_marker:
             self.goal_markers.visualize(goal_pos, self.goal_rot)
+            for i in range(8):
+                self.kpt_markers[i].visualize(self.keypoints[:, i, :] + self.scene.env_origins, self.goal_rot)
 
         self.reset_goal_buf[env_ids] = 0
 
@@ -413,6 +422,25 @@ class ShadowHandCameraEnv(DirectRLEnv):
                 self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),  # 72:87
                 self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),  # 87:107
                 self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),  # 107:137
+                # actions
+                self.actions,  # 137:157
+            ),
+            dim=-1,
+        )
+        return obs
+
+    def compute_embeddings_observation_no_vel(self):
+        obs = torch.cat(
+            (
+                # hand
+                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),  # 0:24
+                # object
+                self.embeddings,
+                # goal
+                self.goal_rot,  # 64:68
+                # fingertips
+                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),  # 72:87
+                self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),  # 87:107
                 # actions
                 self.actions,  # 137:157
             ),
@@ -530,3 +558,53 @@ def compute_rewards(
     )
 
     return reward, goal_resets, successes, cons_successes
+
+
+@torch.jit.script
+def local_to_world_space(pos_offset_local: torch.Tensor, pose_global: torch.Tensor):
+    """ Convert a point from the local frame to the global frame
+    Args:
+        pos_offset_local: Point in local frame. Shape: [N, 3]
+        pose_global: The spatial pose of this point. Shape: [N, 7]
+    Returns:
+        Position in the global frame. Shape: [N, 3]
+    """
+    quat_pos_local = torch.cat(
+        [
+            torch.zeros(pos_offset_local.shape[0], 1, dtype=torch.float32, device=pos_offset_local.device), 
+            pos_offset_local
+        ], dim=-1
+    )
+    quat_trans = torch.cat(
+        [
+            torch.zeros(pos_offset_local.shape[0], 1, dtype=torch.float32, device=pos_offset_local.device), 
+            pose_global[:, 0:3]
+        ], dim=-1
+    )
+    quat_global = pose_global[:, 3:7]
+    quat_global_conj = quat_conjugate(quat_global)
+    pos_offset_global = quat_mul(quat_global, quat_mul(quat_pos_local, quat_global_conj))[:, 1:4]
+
+    result_pos_gloal = pos_offset_global + pose_global[:, 0:3]
+
+    return result_pos_gloal
+
+
+    size = [2*0.03, 2*0.03, 2*0.03]
+
+@torch.jit.script
+def gen_keypoints(
+    pose: torch.Tensor, 
+    num_keypoints: int = 8, 
+    size: Tuple[float, float, float] = (2*0.03, 2*0.03, 2*0.03)
+):
+
+    num_envs = pose.shape[0]
+    keypoints_buf = torch.ones(num_envs, num_keypoints, 3, dtype=torch.float32, device=pose.device)
+    for i in range(num_keypoints):
+        # which dimensions to negate
+        n = [((i >> k) & 1) == 0 for k in range(3)]
+        corner_loc = [(1 if n[k] else -1) * s / 2 for k, s in enumerate(size)],
+        corner = torch.tensor(corner_loc, dtype=torch.float32, device=pose.device) * keypoints_buf[:, i, :]
+        keypoints_buf[:, i, :] = local_to_world_space(corner, pose)
+    return keypoints_buf

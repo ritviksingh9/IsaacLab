@@ -51,7 +51,7 @@ params:
           name: None
 
     aux_outputs:
-      cube_random_params: {}
+      keypoints: {size: 24}
 
   load_checkpoint: False # flag which sets whether to load the checkpoint
   load_path: '' # path to the checkpoint to load

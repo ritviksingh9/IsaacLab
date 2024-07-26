@@ -21,6 +21,8 @@ from omni.isaac.lab.utils import configclass
 from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
 from omni.isaac.lab.utils.noise import GaussianNoiseCfg, NoiseModelWithAdditiveBiasCfg
 
+from typing import List
+
 
 @configclass
 class EventCfg:
@@ -198,6 +200,15 @@ class ShadowHandCameraEnvCfg(DirectRLEnvCfg):
             )
         },
     )
+    # goal keypoint object
+    goal_keypoint_cfg: List[VisualizationMarkersCfg] = [VisualizationMarkersCfg(
+        prim_path=f"/Visuals/kpt_marker_{i}",
+        markers={
+            "goal": sim_utils.SphereCfg(
+                radius=0.01,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+            ),
+        }) for i in range(8)]
     # camera
     # 0.7071, 0.0, -0.7071, 0.0
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -212,12 +223,13 @@ class ShadowHandCameraEnvCfg(DirectRLEnvCfg):
     )
     embedding_model = "resnet"
     embedding_size = {"dino": 384, "resnet": 512}[embedding_model]
-    num_observations = 137 + embedding_size  # (full)
+    # num_observations = 137 + embedding_size  # (full)
+    num_observations = 83 + embedding_size #(no velocity information)
     num_teacher_observations = 157
-    visualize_marker = True
+    visualize_marker = False
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=1.5, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1900, env_spacing=1.5, replicate_physics=True)
 
     # reset
     reset_position_noise = 0.01  # range of position at reset
