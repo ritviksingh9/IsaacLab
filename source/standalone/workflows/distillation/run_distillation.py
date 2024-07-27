@@ -79,7 +79,7 @@ def main():
     student_cfg = os.path.join(
         parent_path,
         agent_cfg_folder,
-        "rl_games_ppo_ff_aux_cfg.yaml"
+        "rl_games_ppo_lstm_cfg.yaml"
     )
     teacher_cfg = os.path.join(
         parent_path,

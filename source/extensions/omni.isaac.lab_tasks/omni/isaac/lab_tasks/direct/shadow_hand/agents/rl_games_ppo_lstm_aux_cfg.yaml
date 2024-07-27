@@ -15,7 +15,7 @@ params:
     name: continuous_a2c_logstd
 
   network:
-    name: actor_critic
+    name: a2c_aux_net
     separate: False
 
     space:
@@ -43,6 +43,20 @@ params:
       layers: 1
       before_mlp: True
       layer_norm: True
+    aux_network: 
+      mlp:
+        units: [512, 256]
+        activation: elu
+        out_activation: None # just nn linear layer on output
+        d2rl: False
+
+        initializer:
+          name: default
+        regularizer:
+          name: None
+
+    aux_outputs:
+      keypoints: {size: 24}
 
   load_checkpoint: False # flag which sets whether to load the checkpoint
   load_path: '' # path to the checkpoint to load

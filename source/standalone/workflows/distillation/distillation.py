@@ -92,8 +92,10 @@ class Dagger:
         self.is_rnn = self.student_model.is_rnn()
         if self.is_rnn:
             self.seq_length = self.student_network_params["config"]["seq_length"]
+            print("USING RNN")
         if hasattr(self.student_model.a2c_network, "is_aux") and self.student_model.a2c_network.is_aux:
             self.is_aux = True
+            print("USING AUX")
         else:
             self.is_aux = False
 
@@ -161,7 +163,7 @@ class Dagger:
         for param in self.student_model.parameters():
             param.grad = None
 
-        num_iters = 50000
+        num_iters = 350000
 
         while log_counter < num_iters:
             beta = max(1 - log_counter / (num_iters / 2), 0)
@@ -226,7 +228,7 @@ class Dagger:
             self.current_lengths = self.current_lengths * not_dones
 
             if log_counter % 10000 == 0 and log_counter > 10:
-                self.optimizer.param_groups[0]["lr"] /= 1.5
+                self.optimizer.param_groups[0]["lr"] /= 1.2
                 # breakpoint()
 
         if self.use_wandb:
