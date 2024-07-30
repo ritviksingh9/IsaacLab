@@ -97,13 +97,13 @@ class ShadowHandCameraEnv(DirectRLEnv):
         self.img = torch.zeros(
             (self.num_envs, self.padded_height, self.padded_width, 3), 
             dtype=torch.float32
-        ).cuda()
+        ).to(self.device)
         self.transform = pth_transforms.Compose([
             pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
         self.embeddings = torch.zeros(
             (self.num_envs, self.embedding_size), dtype=torch.float32
-        ).cuda()
+        ).to(self.device)
 
         self.visualize_marker = self.cfg.visualize_marker
 
@@ -147,7 +147,7 @@ class ShadowHandCameraEnv(DirectRLEnv):
             for p in resnet18.parameters():
                 p.requires_grad = False
             model = resnet18
-        model.to("cuda")
+        model.to(self.device)
         model.eval()
         return model
 
@@ -189,8 +189,8 @@ class ShadowHandCameraEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         # imgs = self._tiled_camera.data.output["rgb"].clone()
         # np_imgs = (imgs.cpu().numpy()*255).astype(np.uint8)
+        # im = Image.fromarray(np_imgs[0])
         # breakpoint()
-        # #Image.fromarray(np_imgs[0]).show()
         if self.cfg.asymmetric_obs:
             self.fingertip_force_sensors = self.hand.root_physx_view.get_link_incoming_joint_force()[
                 :, self.finger_bodies
