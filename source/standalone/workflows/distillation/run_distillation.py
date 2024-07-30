@@ -79,7 +79,7 @@ def main():
     student_cfg = os.path.join(
         parent_path,
         agent_cfg_folder,
-        "rl_games_ppo_lstm_cfg.yaml"
+        "rl_games_ppo_lstm_aux_cfg.yaml"
     )
     teacher_cfg = os.path.join(
         parent_path,
@@ -111,7 +111,7 @@ def main():
     }
     model_builder.register_network("complex_net", ComplexNetworkBuilder)
     model_builder.register_network("a2c_aux_net", A2CWithAuxBuilder)
-    dagger = Dagger(env, dagger_config, use_aux=False)
+    dagger = Dagger(env, dagger_config)
     dagger.distill()
     dagger.save("sh_dist_no_vel_ff")
 

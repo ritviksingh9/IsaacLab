@@ -43,7 +43,7 @@ def rescale_actions(low, high, action):
 
 
 class Dagger:
-    def __init__(self, env, config, use_aux=False, device="cuda:0"):
+    def __init__(self, env, config, device="cuda:0"):
         self.env = env
         self.ov_env = env.env
         self.num_envs = self.ov_env.num_envs
