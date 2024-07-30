@@ -287,9 +287,10 @@ class Dagger:
             mus = res_dict["mus"]
             sigmas = res_dict["sigmas"]
             if self.is_rnn:
-                self.student_hidden_states = [s.detach() for s in res_dict["rnn_states"]]
+                self.student_hidden_states = [s.detach() for s in res_dict["rnn_states"][0]]
             if self.is_aux:
-                aux = self.student_model.a2c_network.last_aux_out
+                # aux = self.student_model.a2c_network.last_aux_out
+                aux = res_dict["rnn_states"][1]
         else:
             batch_dict = {
                 "is_train": False,

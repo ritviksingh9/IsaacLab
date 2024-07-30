@@ -247,7 +247,7 @@ class A2CBuilder(NetworkBuilder):
 
                 if self.is_aux:
                     mlp_args = {
-                        'input_size': self.units[-1] + in_mlp_shape,
+                        'input_size': self.units[-1] + input_shape[0],
                         'units': self.aux_units,
                         'activation': self.aux_activation,
                         'norm_func_name': self.aux_network.get('normalization', None),
@@ -261,16 +261,22 @@ class A2CBuilder(NetworkBuilder):
                     self.aux_networks = nn.ModuleDict()
 
                     for output_name in self.aux_outputs:
-                        assert len(input_shape[output_name]) == 1
-                        aux_out_size = input_shape[output_name][0]
+                        aux_out_size = self.aux_heads[output_name]["size"]
                         self.aux_networks[output_name] = nn.Sequential(
                             nn.Linear(self.aux_units[-1], aux_out_size),
                             self.activations_factory.create(self.aux_out_activation)
                         )
+                        # assert len(input_shape[output_name]) == 1
+                        # aux_out_size = input_shape[output_name][0]
+                        # self.aux_networks[output_name] = nn.Sequential(
+                        #     nn.Linear(self.aux_units[-1], aux_out_size),
+                        #     self.activations_factory.create(self.aux_out_activation)
+                        # )
             else:
                 if self.is_aux:
                     mlp_args = {
-                        'input_size': self.units[-1] + in_mlp_shape,
+                        # 'input_size': self.rnn_units + in_mlp_shape,
+                        'input_size': self.units[-1] + input_shape[0],
                         'units': self.aux_units,
                         'activation': self.aux_activation,
                         'norm_func_name': self.aux_network.get('normalization', None),
@@ -283,7 +289,6 @@ class A2CBuilder(NetworkBuilder):
                     self.aux_networks = nn.ModuleDict()
 
                     for output_name in self.aux_outputs:
-                        # breakpoint()
                         # assert len(input_shape[output_name]) == 1
                         # aux_out_size = input_shape[output_name][0]
                         aux_out_size = self.aux_heads[output_name]["size"]
@@ -521,7 +526,7 @@ class A2CBuilder(NetworkBuilder):
                         sigma = self.sigma_act(self.sigma)
                     else:
                         sigma = self.sigma_act(self.sigma(out))
-                    return mu, mu*0 + sigma, value, states
+                    return mu, mu*0 + sigma, value, (states, self.last_aux_out)
                     
         def is_separate_critic(self):
             return self.separate
