@@ -7,13 +7,17 @@
 from __future__ import annotations
 
 import numpy as np
+import os
 import torch
 import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
 import torchvision.transforms as pth_transforms
 import torchvision.models as models
+import torch.distributed as dist
 from torch.autograd import Variable
 from PIL import Image
 from collections.abc import Sequence
+from contextlib import nullcontext
 
 import omni.isaac.lab.sim as sim_utils
 from omni.isaac.lab.assets import Articulation, RigidObject
@@ -31,6 +35,11 @@ class ShadowHandCameraEnv(DirectRLEnv):
 
     def __init__(self, cfg: ShadowHandCameraEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+
+        self.world_size = int(os.environ['WORLD_SIZE'])  # Total number of processes
+        self.rank = int(os.environ['RANK'])  # Global rank of this process
+        self.local_rank = int(os.environ['LOCAL_RANK']) # local rank of the process 
+        dist.init_process_group("nccl", rank=self.rank, world_size=self.world_size)
 
         self.num_hand_dofs = self.hand.num_joints
 
@@ -82,7 +91,9 @@ class ShadowHandCameraEnv(DirectRLEnv):
         self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
 
         # embedding model settings
-        self.model = self._get_embeddings_model(model_name=self.cfg.embedding_model)
+        self.finetune_backbone = self.cfg.finetune_backbone
+        self.backbone = self._get_embeddings_model(model_name=self.cfg.embedding_model)
+        self.backbone_ddp = DDP(self.backbone, device_ids=[self.local_rank], find_unused_parameters=True)
         self.img_width = self.cfg.tiled_camera.width
         self.img_height = self.cfg.tiled_camera.height
         self.batch_size = min(32, self.num_envs)
@@ -102,7 +113,7 @@ class ShadowHandCameraEnv(DirectRLEnv):
             pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
         self.embeddings = torch.zeros(
-            (self.num_envs, self.embedding_size), dtype=torch.float32
+            (self.num_envs, self.embedding_size), dtype=torch.float32, requires_grad=self.finetune_backbone
         ).to(self.device)
 
         self.visualize_marker = self.cfg.visualize_marker
@@ -145,20 +156,33 @@ class ShadowHandCameraEnv(DirectRLEnv):
             modules=list(resnet18.children())[:-1]
             resnet18=nn.Sequential(*modules)
             for p in resnet18.parameters():
-                p.requires_grad = False
+                p.requires_grad = self.finetune_backbone
             model = resnet18
+        elif model_name == "theia":
+            import transformers
+            from transformers import AutoModel
+            model = AutoModel.from_pretrained(
+                "theaiinstitute/theia-tiny-patch16-224-cdiv", trust_remote_code=True
+            ).backbone
         model.to(self.device)
-        model.eval()
+        if not self.finetune_backbone: model.eval()
         return model
 
     def _get_embeddings(self, observations):
         self.img[:, :self.img_height, :self.img_width, :] = observations["policy"]
         transformed_img = self.transform(self.img.permute(0, 3, 1, 2))
 
-        with torch.no_grad():
+        context_manager = torch.no_grad() if not self.finetune_backbone else nullcontext()
+
+        # if we are manually finetuning we should zero out the gradients because we are doing in-place allocations
+        if self.finetune_backbone: self.embeddings = self.embeddings.detach() * 0.
+        with context_manager:
             for i in range(0, self.num_envs, self.batch_size):
                 bound = min(self.batch_size+i, self.num_envs)
-                embeddings = self.model(transformed_img[i:bound]).view(bound-i, -1)
+                if self.cfg.embedding_model == "theia":
+                    embeddings = self.backbone_ddp(self.img[i:bound])[:, 0, :].view(bound-i, -1)
+                else:
+                    embeddings = self.backbone_ddp(transformed_img[i:bound]).view(bound-i, -1)
                 self.embeddings[i:bound, :] = embeddings
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
@@ -214,7 +238,7 @@ class ShadowHandCameraEnv(DirectRLEnv):
         if self.cfg.asymmetric_obs:
             observations = {"policy": obs, "critic": states}
         
-        observations["expert_policy"] =  self.compute_full_observations()
+        observations["expert_policy"] = self.compute_full_observations()
         self.keypoints = gen_keypoints(pose=torch.cat((self.object_pos, self.object_rot), dim=1))
         aux_info = {
             "keypoints": self.keypoints

@@ -222,14 +222,19 @@ class ShadowHandCameraEnvCfg(DirectRLEnvCfg):
         height=224,
     )
     embedding_model = "resnet"
-    embedding_size = {"dino": 384, "resnet": 512}[embedding_model]
+    embedding_size = {
+        "dino": 384, 
+        "resnet": 512, 
+        "theia": 192
+    }[embedding_model]
     # num_observations = 137 + embedding_size  # (full)
     num_observations = 83 + embedding_size #(no velocity information)
     num_teacher_observations = 157
+    finetune_backbone = True
     visualize_marker = False
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1900, env_spacing=1.5, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4, env_spacing=1.5, replicate_physics=True)
 
     # reset
     reset_position_noise = 0.01  # range of position at reset

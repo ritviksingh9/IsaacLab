@@ -8,6 +8,7 @@ from rl_games.algos_torch.d2rl import D2RLNet
 from rl_games.algos_torch.sac_helper import  SquashedNormal
 from rl_games.common.layers.recurrent import  GRUWithDones, LSTMWithDones
 from rl_games.common.layers.value import  TwoHotEncodedValue, DefaultValue
+from rl_games.algos_torch.running_mean_std import RunningMeanStd
 
 
 def _create_initializer(func, **kwargs):
@@ -307,6 +308,7 @@ class A2CBuilder(NetworkBuilder):
                 'norm_only_first_layer' : self.norm_only_first_layer
             }
             self.actor_mlp = self._build_mlp(**mlp_args)
+            self.running_mean_std = RunningMeanStd(input_shape)
             if self.separate:
                 self.critic_mlp = self._build_mlp(**mlp_args)
 
@@ -355,6 +357,9 @@ class A2CBuilder(NetworkBuilder):
 
         def forward(self, obs_dict):
             obs = obs_dict['obs']
+            # obs = self.running_mean_std(obs_dict['observations'])
+            # TODO: fix this and allow for normalization! 
+            obs = obs_dict["observations"]
             states = obs_dict.get('rnn_states', None)
             dones = obs_dict.get('dones', None)
             bptt_len = obs_dict.get('bptt_len', 0)

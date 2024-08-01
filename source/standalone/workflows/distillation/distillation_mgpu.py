@@ -49,7 +49,7 @@ class Dagger:
         self.world_size = int(os.environ['WORLD_SIZE'])  # Total number of processes
         self.rank = int(os.environ['RANK'])  # Global rank of this process
         self.local_rank = int(os.environ['LOCAL_RANK']) # local rank of the process 
-        dist.init_process_group("nccl", rank=self.rank, world_size=self.world_size)
+        # dist.init_process_group("nccl", rank=self.rank, world_size=self.world_size)
         torch.cuda.set_device(self.local_rank)
 
         self.env = env
@@ -92,7 +92,12 @@ class Dagger:
             dist.broadcast(param.data, src=0)
         self.student_model_ddp = DDP(self.student_model, device_ids=[self.local_rank], find_unused_parameters=True)
         self.teacher_model = self.teacher_network.build(self.teacher_model_config).to(self.device)
-        self.optimizer = torch.optim.Adam(self.student_model_ddp.parameters(), lr=1e-3, eps=1e-8)
+        self.finetune_backbone = self.ov_env.finetune_backbone
+        self.optimizer = torch.optim.Adam([
+            # self.student_model_ddp.parameters(), lr=1e-3, eps=1e-8
+            {"params": self.student_model_ddp.parameters(), "lr": 1e-3, "eps": 1e-8},
+            {"params": self.ov_env.backbone_ddp.parameters(), "lr": 1e-5, "eps": 1e-8},
+        ])
         # load weights for student and teacher
         if self.config["student"]["ckpt"] is not None:
             self.set_weights(self.config["student"]["ckpt"], "student")
@@ -122,8 +127,19 @@ class Dagger:
         if self.rank == 0:
             self.writer = SummaryWriter(summaries_dir)
             self.use_wandb = False
+            import pathlib
+            parent_path = str(pathlib.Path(__file__).parent.parent.parent.parent.parent.resolve())
+            summaries_dir = os.path.join(parent_path, summaries_dir)
             if self.use_wandb:
-                wandb.init(project="DexE2E", sync_tensorboard=True)
+                wandb.login(key=os.environ["WANDB_API_KEY"])
+                # wandb.tensorboard.patch(root_logdir=summaries_dir)
+                wandb.init(
+                    project=os.environ["WANDB_PROJECT"], 
+                    entity=os.environ["WANDB_ENTITY"],
+                    name=os.environ["WANDB_NAME"],
+                    notes=os.environ["WANDB_NOTES"],
+                    # sync_tensorboard=True,
+                )
 
         self.init_tensors()
 
@@ -258,10 +274,22 @@ class Dagger:
                 self.writer.add_scalar(
                     "imitation_loss", student_loss.detach().cpu().numpy(), self.frame
                 )
+                if self.use_wandb:
+                    wandb.log({
+                        "cs": self.ov_env.consecutive_successes.cpu().numpy()[0],
+                        "imitation_loss": student_loss.detach().cpu().numpy(),
+                        "total_loss": total_loss.detach().cpu().numpy(),
+                        "iteration": self.frame
+                    })
                 if self.is_aux:
                     self.writer.add_scalar(
                         "aux_loss", aux_loss.detach().cpu().numpy(), self.frame
                     )
+                    if self.use_wandb:
+                        wandb.log({
+                            "aux_loss": aux_loss.detach().cpu().numpy(),
+                            "iteration": self.frame
+                        })
 
         if log_counter % 10 == 0:
             print("="*10)
@@ -280,6 +308,7 @@ class Dagger:
             batch_dict = {
                 "is_train": True,
                 "obs": obs[self.student_obs_type],
+                "observations": obs[self.student_obs_type],
                 "prev_actions": self.prev_actions_student,
             }
             if self.is_rnn:
@@ -292,7 +321,6 @@ class Dagger:
             if self.is_rnn:
                 self.student_hidden_states = [s.detach() for s in res_dict["rnn_states"][0]]
             if self.is_aux:
-                # aux = self.student_model_ddp.a2c_network.last_aux_out
                 aux = res_dict["rnn_states"][-1]
         else:
             batch_dict = {
