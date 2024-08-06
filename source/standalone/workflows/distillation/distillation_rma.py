@@ -90,18 +90,37 @@ class Dagger:
             'normalize_input': self.normalize_input,
         }
         self.student_model = self.student_network.build(self.student_model_config).to(self.device)
+        self.teacher_model = self.teacher_network.build(self.teacher_model_config).to(self.device)
+        # load weights for student and teacher
+        if self.config["student"]["ckpt"] is not None:
+            self.set_weights(self.config["student"]["ckpt"], "student")
+        self.set_weights(self.config["teacher"]["ckpt"], "teacher")
+        # load the base mlp
+        teacher_state_dict = self.teacher_model.state_dict()
+        trainable_params = list()
+        for name, param in self.student_model.named_parameters():
+            if name in teacher_state_dict:
+                param.data.copy_(teacher_state_dict[name].data)
+                param.requires_grad = False
+            else:
+                param.requires_grad = True
+                trainable_params.append(param)
         for param in self.student_model.parameters():
             dist.broadcast(param.data, src=0)
+        # create DDP object for student
         self.student_model_ddp = DDP(self.student_model, device_ids=[self.local_rank], find_unused_parameters=True)
-        self.teacher_model = self.teacher_network.build(self.teacher_model_config).to(self.device)
         self.finetune_backbone = self.ov_env.finetune_backbone
         self.warm_up_lr = 1e-5
         self.peak_lr = 1e-3
         params = [{"params": self.student_model_ddp.parameters(), "lr": self.warm_up_lr, "eps": 1e-8}]
         if self.finetune_backbone:
             params.append({"params": self.ov_env.backbone_ddp.parameters(), "lr": 1e-5, "eps": 1e-8})
-        # self.optimizer = torch.optim.Adam(params)
-        self.optimizer = torch.optim.Adam(self.student_model_ddp.parameters(), lr=1e-3, eps=1e-8)
+
+        self.optimizer = torch.optim.Adam(
+            trainable_params,
+            lr=1e-3, eps=1e-8
+        )
+        # self.optimizer = torch.optim.Adam(self.student_model_ddp.parameters(), lr=1e-3, eps=1e-8)
         self.num_warmup_steps = 1000
         self.num_iters = 350000
         def lr_lambda(current_step):
@@ -121,14 +140,10 @@ class Dagger:
                 )
         # self.scheduler = LambdaLR(self.optimizer, lr_lambda)
 
-        # load weights for student and teacher
-        if self.config["student"]["ckpt"] is not None:
-            self.set_weights(self.config["student"]["ckpt"], "student")
-        self.set_weights(self.config["teacher"]["ckpt"], "teacher")
         # get the observation type of the student and teacher
         self.student_obs_type = self.config["student"]["obs_type"]
         self.teacher_obs_type = self.config["teacher"]["obs_type"]
-        self.is_rnn = self.student_model.is_rnn()
+        self.is_rnn = True
         if self.is_rnn:
             self.seq_length = self.student_network_params["config"]["seq_length"]
             print("USING RNN")
@@ -206,7 +221,6 @@ class Dagger:
 
         while log_counter < num_iters:
             beta = max(1 - log_counter / (num_iters / 2), 0)
-
             with torch.no_grad():
                 actions_teacher = self.get_actions(obs, "teacher")
             actions_student = self.get_actions(obs, "student")
@@ -218,10 +232,7 @@ class Dagger:
                 for aux_name in aux_out.keys():
                     aux_loss += self.loss(aux_out[aux_name], aux_gt[aux_name].reshape(self.num_envs, -1))
 
-            student_loss = (
-                self.loss(actions_student["mus"], actions_teacher["mus"]) +
-                self.loss(actions_student["sigmas"], actions_teacher["sigmas"])
-            )
+            student_loss = self.loss(actions_student["latents"], actions_teacher["latents"])
             total_loss += student_loss + aux_loss
 
             if self.rank == 0:
@@ -334,6 +345,7 @@ class Dagger:
 
     def get_actions(self, obs, policy_type):
         aux = None
+        latents = None
         if policy_type == "student":
             batch_dict = {
                 "is_train": True,
@@ -352,6 +364,7 @@ class Dagger:
                 self.student_hidden_states = [s.detach() for s in res_dict["rnn_states"][0]]
             if self.is_aux:
                 aux = res_dict["rnn_states"][-1]
+            latents = res_dict["rnn_states"][-1]
         else:
             batch_dict = {
                 "is_train": False,
@@ -361,6 +374,7 @@ class Dagger:
             res_dict = self.teacher_model(batch_dict)
             mus = res_dict["mus"]
             sigmas = res_dict["sigmas"]
+            latents = res_dict["rnn_states"][-1]
         distr = torch.distributions.Normal(mus, sigmas, validate_args=False)
         selected_action = distr.sample().squeeze()
 
@@ -368,7 +382,8 @@ class Dagger:
             "mus": mus,
             "sigmas": sigmas,
             "actions": selected_action,
-            "aux": aux
+            "aux": aux,
+            "latents": latents
         }
     
     def loss(self, student_result, target_result):

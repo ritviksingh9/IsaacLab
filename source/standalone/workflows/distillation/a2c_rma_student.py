@@ -297,9 +297,38 @@ class A2CBuilder(NetworkBuilder):
                             nn.Linear(self.aux_units[-1], aux_out_size),
                             self.activations_factory.create(self.aux_out_activation)
                         )
+            
+            # adaptation module
+            self.adaptation_module_rnn = self._build_rnn(
+                self.adaptation_module_rnn_name, 
+                input_shape[-1]-self.goal_size, 
+                self.adaptation_module_rnn_units,
+                self.adaptation_module_rnn_layers
+            )
+
+            if self.rnn_ln:
+                self.layer_norm = torch.nn.LayerNorm(self.adaptation_module_rnn_units)
+
+            adaptation_mlp_args = {
+                'input_size': self.adaptation_module_rnn_units,
+                'units': self.adaptation_module_mlp_units,
+                'activation': self.adaptation_module_mlp_activation,
+                'norm_func_name': self.adaptation_module_mlp.get('normalization', None),
+                'dense_func': torch.nn.Linear,
+                'd2rl': self.adaptation_module_mlp_is_d2rl,
+                'norm_only_first_layer': self.adaptation_module_mlp_only_first_layer
+            }
+
+            self.adaptation_mlp = self._build_mlp(**adaptation_mlp_args)
+
+            self.adaptation_mlp_network = nn.Sequential(
+                nn.Linear(self.adaptation_module_mlp_units[-1], self.adaptation_module_out),
+                self.activations_factory.create(self.adaptation_module_mlp_out_activation)
+            )
+
 
             mlp_args = {
-                'input_size' : in_mlp_shape, 
+                'input_size' : self.adaptation_module_out+input_shape[-1]-self.embedding_size, 
                 'units' : self.units, 
                 'activation' : self.activation, 
                 'norm_func_name' : self.normalization,
@@ -356,13 +385,37 @@ class A2CBuilder(NetworkBuilder):
                     sigma_init(self.sigma.weight)  
 
         def forward(self, obs_dict):
+            # obs [goal, common, embed]
             obs = obs_dict['obs']
-            # obs = self.running_mean_std(obs_dict['observations'])
-            # TODO: fix this and allow for normalization! 
-            # obs = obs_dict["observations"]
             states = obs_dict.get('rnn_states', None)
             dones = obs_dict.get('dones', None)
             bptt_len = obs_dict.get('bptt_len', 0)
+
+            if dones is not None:
+                dones = dones.reshape(num_seqs, seq_length, -1)
+                dones = dones.transpose(0, 1)
+            out, states = self.adaptation_module_rnn(obs[:, self.goal_size:].unsqueeze(0), states, dones, bptt_len)
+            out = out.transpose(0, 1)
+            out = out.contiguous().reshape(out.size()[0] * out.size()[1], -1)
+            if self.rnn_ln:
+                out = self.layer_norm(out)
+            
+            self.latents = self.adaptation_mlp_network(out)
+            base_policy_obs = torch.cat([
+                obs[:, :-self.embedding_size],
+                self.latents
+            ], dim=-1)
+
+            out = self.actor_mlp(base_policy_obs)
+            mu = self.mu_act(self.mu(out))
+            if self.fixed_sigma:
+                sigma = self.sigma_act(self.sigma)
+            else:
+                sigma = self.sigma_act(self.sigma(base_policy_obs))
+            value = self.value_act(self.value(out))
+            return mu, mu*0 + sigma, value, (states, self.latents)
+
+            
 
             if self.has_cnn:
                 # for obs shape 4
@@ -531,7 +584,7 @@ class A2CBuilder(NetworkBuilder):
                         sigma = self.sigma_act(self.sigma)
                     else:
                         sigma = self.sigma_act(self.sigma(out))
-                    return mu, mu*0 + sigma, value, (states, self.last_aux_out)
+                    return mu, mu*0 + sigma, value, (states, self.latents)
                     
         def is_separate_critic(self):
             return self.separate
@@ -540,14 +593,12 @@ class A2CBuilder(NetworkBuilder):
             return self.has_rnn
 
         def get_default_rnn_state(self):
-            if not self.has_rnn:
-                return None
-            num_layers = self.rnn_layers
-            if self.rnn_name == 'identity':
+            num_layers = self.adaptation_module_rnn_layers
+            if self.adaptation_module_rnn_name == 'identity':
                 rnn_units = 1
             else:
-                rnn_units = self.rnn_units
-            if self.rnn_name == 'lstm':
+                rnn_units = self.adaptation_module_rnn_units
+            if self.adaptation_module_rnn_name == 'lstm':
                 if self.separate:
                     return (torch.zeros((num_layers, self.num_seqs, rnn_units)), 
                             torch.zeros((num_layers, self.num_seqs, rnn_units)),
@@ -589,6 +640,24 @@ class A2CBuilder(NetworkBuilder):
                 # self.aux_initializer = self.aux_network['mlp']['initializer']
                 self.aux_is_d2rl = self.aux_network['mlp'].get('d2rl', False)
                 self.aux_norm_only_first_layer = self.aux_network['mlp'].get('norm_only_first_layer', False)
+            
+            self.adaptation_module = params['adaptation_module']
+            self.adaptation_module_rnn = self.adaptation_module['rnn']
+            self.adaptation_module_rnn_units = self.adaptation_module['rnn']['units']
+            self.adaptation_module_rnn_layers = self.adaptation_module['rnn']['layers']
+            self.adaptation_module_rnn_name = self.adaptation_module['rnn']['name']
+            self.rnn_ln = self.adaptation_module['rnn'].get('layer_norm', False)
+            self.is_rnn_before_mlp = self.adaptation_module['rnn'].get('before_mlp', False)
+            self.rnn_concat_input = self.adaptation_module['rnn'].get('concat_input', False)
+            self.adaptation_module_mlp = self.adaptation_module['mlp']
+            self.adaptation_module_mlp_units = self.adaptation_module['mlp']['units']
+            self.adaptation_module_mlp_activation = self.adaptation_module['mlp']['activation']
+            self.adaptation_module_mlp_is_d2rl = self.adaptation_module['mlp'].get('d2rl', False)
+            self.adaptation_module_mlp_only_first_layer = self.adaptation_module['mlp'].get('norm_only_first_layer', False)
+            self.adaptation_module_out = self.adaptation_module['mlp']['num_out']
+            self.adaptation_module_mlp_out_activation = self.adaptation_module['mlp']['out_activation']
+            self.goal_size = self.adaptation_module['goal_size']
+            self.embedding_size = self.adaptation_module['embedding_size']
 
             if self.has_space:
                 self.is_multi_discrete = 'multi_discrete'in params['space']

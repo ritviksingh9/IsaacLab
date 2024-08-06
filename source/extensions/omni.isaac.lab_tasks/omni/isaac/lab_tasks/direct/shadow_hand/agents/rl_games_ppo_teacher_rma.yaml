@@ -15,7 +15,7 @@ params:
     name: continuous_a2c_logstd
 
   network:
-    name: a2c_aux_net
+    name: a2c_rma_net_teacher
     separate: False
 
     space:
@@ -37,26 +37,20 @@ params:
         name: default
       regularizer:
         name: None
-    rnn:
-      name: lstm
-      units: 1024
-      layers: 1
-      before_mlp: True
-      layer_norm: True
-    aux_network: 
+
+    env_encoder:
       mlp:
         units: [512, 256]
+        num_in: 132
+        num_out: 16
         activation: elu
-        out_activation: None # just nn linear layer on output
+        out_activation: None
         d2rl: False
 
         initializer:
           name: default
         regularizer:
           name: None
-
-    aux_outputs:
-      keypoints: {size: 24}
 
   load_checkpoint: False # flag which sets whether to load the checkpoint
   load_path: '' # path to the checkpoint to load
@@ -111,20 +105,13 @@ params:
         name: actor_critic
         central_value: True
         mlp:
-          units: [512]
-          activation: relu
+          units: [512, 512, 256, 128]
+          activation: elu
           d2rl: False
           initializer:
             name: default
           regularizer:
             name: None
-        rnn:
-          name: lstm
-          units: 1024
-          layers: 1
-          before_mlp: True
-          layer_norm: True
-          zero_rnn_on_done: False
 
     player:
       deterministic: True

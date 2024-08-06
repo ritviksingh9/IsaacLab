@@ -201,6 +201,7 @@ class A2CBuilder(NetworkBuilder):
             self.critic_cnn = nn.Sequential()
             self.actor_mlp = nn.Sequential()
             self.critic_mlp = nn.Sequential()
+            input_shape = (input_shape[-1] + self.env_enc_num_out - self.env_enc_num_in, )
             
             if self.has_cnn:
                 if self.permute_input:
@@ -297,6 +298,24 @@ class A2CBuilder(NetworkBuilder):
                             nn.Linear(self.aux_units[-1], aux_out_size),
                             self.activations_factory.create(self.aux_out_activation)
                         )
+            
+            # environment encoder
+            env_enc_args = {
+                'input_size': self.env_enc_num_in,
+                'units': self.env_enc_units,
+                'activation': self.env_enc_out_activation,
+                'norm_func_name': self.env_enc.get('normalization', None),
+                'dense_func': torch.nn.Linear,
+                'd2rl': self.env_enc_is_d2rl,
+                'norm_only_first_layer': self.env_enc_norm_only_first_layer
+            }
+            self.env_enc_mlp = self._build_mlp(**env_enc_args)
+
+            self.env_enc_network = nn.Sequential(
+                nn.Linear(self.env_enc_units[-1], self.env_enc_num_out),
+                self.activations_factory.create(self.env_enc_out_activation)
+            )
+
 
             mlp_args = {
                 'input_size' : in_mlp_shape, 
@@ -356,7 +375,12 @@ class A2CBuilder(NetworkBuilder):
                     sigma_init(self.sigma.weight)  
 
         def forward(self, obs_dict):
-            obs = obs_dict['obs']
+            full_obs = obs_dict['obs']
+            enc_obs = full_obs[:, :self.env_enc_num_in]
+            partial_obs = full_obs[:, self.env_enc_num_in:]
+            env_enc_out = self.env_enc_mlp(enc_obs)
+            self.latents = self.env_enc_network(env_enc_out)
+            obs = torch.cat([partial_obs, self.latents], dim=-1)
             # obs = self.running_mean_std(obs_dict['observations'])
             # TODO: fix this and allow for normalization! 
             # obs = obs_dict["observations"]
@@ -531,7 +555,7 @@ class A2CBuilder(NetworkBuilder):
                         sigma = self.sigma_act(self.sigma)
                     else:
                         sigma = self.sigma_act(self.sigma(out))
-                    return mu, mu*0 + sigma, value, (states, self.last_aux_out)
+                    return mu, mu*0 + sigma, value, (states, self.latents)
                     
         def is_separate_critic(self):
             return self.separate
@@ -589,6 +613,15 @@ class A2CBuilder(NetworkBuilder):
                 # self.aux_initializer = self.aux_network['mlp']['initializer']
                 self.aux_is_d2rl = self.aux_network['mlp'].get('d2rl', False)
                 self.aux_norm_only_first_layer = self.aux_network['mlp'].get('norm_only_first_layer', False)
+            
+            self.env_enc = params['env_encoder']
+            self.env_enc_units = self.env_enc['mlp']['units']
+            self.env_enc_activation = self.env_enc['mlp']['activation']
+            self.env_enc_out_activation = self.env_enc['mlp']['out_activation']
+            self.env_enc_is_d2rl = self.env_enc['mlp'].get('d2rl', False)
+            self.env_enc_norm_only_first_layer = self.env_enc['mlp'].get('norm_only_first_layer', False)
+            self.env_enc_num_in = self.env_enc['mlp']['num_in']
+            self.env_enc_num_out = self.env_enc['mlp']['num_out']
 
             if self.has_space:
                 self.is_multi_discrete = 'multi_discrete'in params['space']

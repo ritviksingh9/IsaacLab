@@ -49,6 +49,7 @@ from datetime import datetime
 
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.algo_observer import IsaacAlgoObserver
+from rl_games.algos_torch import model_builder
 from rl_games.torch_runner import Runner
 
 from omni.isaac.lab.utils.dict import print_dict
@@ -58,11 +59,15 @@ import omni.isaac.lab_tasks  # noqa: F401
 from omni.isaac.lab_tasks.utils import load_cfg_from_registry, parse_env_cfg
 from omni.isaac.lab_tasks.utils.wrappers.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 
+from a2c_rma import A2CBuilder as A2CWithRMA
+
 
 def main():
     """Train with RL-Games agent."""
     # parse seed from command line
     args_cli_seed = args_cli.seed
+
+    model_builder.register_network("a2c_rma_net_teacher", A2CWithRMA)
 
     # parse configuration
     env_cfg = parse_env_cfg(

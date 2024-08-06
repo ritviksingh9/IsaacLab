@@ -45,6 +45,7 @@ import torch
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.player import BasePlayer
 from rl_games.torch_runner import Runner
+from rl_games.algos_torch import model_builder
 
 from omni.isaac.lab.utils.assets import retrieve_file_path
 
@@ -52,6 +53,7 @@ import omni.isaac.lab_tasks  # noqa: F401
 from omni.isaac.lab_tasks.utils import get_checkpoint_path, load_cfg_from_registry, parse_env_cfg
 from omni.isaac.lab_tasks.utils.wrappers.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 
+from a2c_rma import A2CBuilder as A2CWithRMA
 
 def main():
     """Play with RL-Games agent."""
@@ -60,6 +62,7 @@ def main():
         args_cli.task, use_gpu=not args_cli.cpu, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
     agent_cfg = load_cfg_from_registry(args_cli.task, "rl_games_cfg_entry_point")
+    model_builder.register_network("a2c_rma_net", A2CWithRMA)
 
     # wrap around environment for rl-games
     rl_device = agent_cfg["params"]["config"]["device"]

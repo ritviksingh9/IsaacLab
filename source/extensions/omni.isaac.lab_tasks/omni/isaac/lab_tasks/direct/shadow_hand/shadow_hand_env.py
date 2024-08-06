@@ -114,7 +114,7 @@ class ShadowHandEnv(DirectRLEnv):
         )
 
     def _get_observations(self) -> dict:
-        if self.cfg.asymmetric_obs:
+        if self.cfg.asymmetric_obs or self.cfg.obs_type == "full_rma":
             self.fingertip_force_sensors = self.hand.root_physx_view.get_link_incoming_joint_force()[
                 :, self.finger_bodies
             ]
@@ -123,6 +123,8 @@ class ShadowHandEnv(DirectRLEnv):
             obs = self.compute_reduced_observations()
         elif self.cfg.obs_type == "full":
             obs = self.compute_full_observations()
+        elif self.cfg.obs_type == "full_rma":
+            obs = self.compute_full_rma_observations()
         else:
             print("Unknown observations type!")
 
@@ -312,6 +314,29 @@ class ShadowHandEnv(DirectRLEnv):
                 self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),  # 107:137
                 # actions
                 self.actions,  # 137:157
+            ),
+            dim=-1,
+        )
+        return obs
+
+    def compute_full_rma_observations(self):
+        obs = torch.cat(
+            (
+                # env enc obs
+                self.cfg.vel_obs_scale * self.hand_dof_vel, # 0:24
+                self.object_pos, # 24:27
+                self.object_rot, # 27:31
+                self.object_linvel,  # 31:34
+                self.cfg.vel_obs_scale * self.object_angvel, # 34:37
+                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3), # 37:52
+                self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4), # 52:72
+                self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6), # 72:102
+                self.cfg.force_torque_obs_scale
+                * self.fingertip_force_sensors.view(self.num_envs, self.num_fingertips * 6), # 102:132
+                # base policy obs
+                self.goal_rot, # 132:136
+                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits), # 136:160
+                self.actions, # 160:180
             ),
             dim=-1,
         )

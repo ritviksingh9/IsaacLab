@@ -93,7 +93,8 @@ class ShadowHandCameraEnv(DirectRLEnv):
         # embedding model settings
         self.finetune_backbone = self.cfg.finetune_backbone
         self.backbone = self._get_embeddings_model(model_name=self.cfg.embedding_model)
-        self.backbone_ddp = DDP(self.backbone, device_ids=[self.local_rank], find_unused_parameters=True)
+        if self.finetune_backbone:
+            self.backbone_ddp = DDP(self.backbone, device_ids=[self.local_rank], find_unused_parameters=True)
         self.img_width = self.cfg.tiled_camera.width
         self.img_height = self.cfg.tiled_camera.height
         self.batch_size = min(32, self.num_envs)
@@ -164,6 +165,13 @@ class ShadowHandCameraEnv(DirectRLEnv):
             model = AutoModel.from_pretrained(
                 "theaiinstitute/theia-tiny-patch16-224-cdiv", trust_remote_code=True
             ).backbone
+        elif model_name == "convnext":
+            convnext = models.convnext_tiny(pretrained=True)
+            modules = list(convnext.children())[:-1]
+            convnext = nn.Sequential(*modules)
+            for p in convnext.parameters():
+                p.requires_grad = False
+            model = convnext
         model.to(self.device)
         if not self.finetune_backbone: model.eval()
         return model
@@ -175,15 +183,18 @@ class ShadowHandCameraEnv(DirectRLEnv):
         context_manager = torch.no_grad() if not self.finetune_backbone else nullcontext()
 
         # if we are manually finetuning we should zero out the gradients because we are doing in-place allocations
-        if self.finetune_backbone: self.embeddings = self.embeddings.detach() * 0.
+        if self.finetune_backbone: self.embeddings = self.embeddings.detach().clone().requires_grad_(True)
+        embedding_list = []
+        backbone = self.backbone if not self.finetune_backbone else self.backbone_ddp
         with context_manager:
             for i in range(0, self.num_envs, self.batch_size):
                 bound = min(self.batch_size+i, self.num_envs)
                 if self.cfg.embedding_model == "theia":
-                    embeddings = self.backbone_ddp(self.img[i:bound])[:, 0, :].view(bound-i, -1)
+                    embeddings = backbone(self.img[i:bound])[:, 0, :].view(bound-i, -1)
                 else:
-                    embeddings = self.backbone_ddp(transformed_img[i:bound]).view(bound-i, -1)
-                self.embeddings[i:bound, :] = embeddings
+                    embeddings = backbone(transformed_img[i:bound])
+                embedding_list.append(embeddings[:, :, 0, 0])
+        self.embeddings = torch.cat(embedding_list, dim=0)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
@@ -215,7 +226,7 @@ class ShadowHandCameraEnv(DirectRLEnv):
         # np_imgs = (imgs.cpu().numpy()*255).astype(np.uint8)
         # im = Image.fromarray(np_imgs[0])
         # breakpoint()
-        if self.cfg.asymmetric_obs:
+        if self.cfg.asymmetric_obs or "rma" in self.cfg.obs_type:
             self.fingertip_force_sensors = self.hand.root_physx_view.get_link_incoming_joint_force()[
                 :, self.finger_bodies
             ]
@@ -228,6 +239,9 @@ class ShadowHandCameraEnv(DirectRLEnv):
             self._get_embeddings({"policy": self._tiled_camera.data.output["rgb"].clone()})
             # obs = self.compute_embeddings_observations()
             obs = self.compute_embeddings_observation_no_vel()
+        elif self.cfg.obs_type == "rma_embedding":
+            self._get_embeddings({"policy": self._tiled_camera.data.output["rgb"].clone()})
+            obs = self.compute_rma_embeddings_observations()
         else:
             print("Unknown observations type!")
 
@@ -238,7 +252,10 @@ class ShadowHandCameraEnv(DirectRLEnv):
         if self.cfg.asymmetric_obs:
             observations = {"policy": obs, "critic": states}
         
-        observations["expert_policy"] = self.compute_full_observations()
+        if "rma" in self.cfg.obs_type:
+            observations["expert_policy"] = self.compute_full_rma_observations()
+        else:
+            observations["expert_policy"] = self.compute_full_observations()
         self.keypoints = gen_keypoints(pose=torch.cat((self.object_pos, self.object_rot), dim=1))
         aux_info = {
             "keypoints": self.keypoints
@@ -499,6 +516,40 @@ class ShadowHandCameraEnv(DirectRLEnv):
             dim=-1,
         )
         return states
+
+    def compute_full_rma_observations(self):
+        obs = torch.cat(
+            (
+                # env enc obs
+                self.cfg.vel_obs_scale * self.hand_dof_vel, # 0:24
+                self.object_pos, # 24:27
+                self.object_rot, # 27:31
+                self.object_linvel,  # 31:34
+                self.cfg.vel_obs_scale * self.object_angvel, # 34:37
+                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3), # 37:52
+                self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4), # 52:72
+                self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6), # 72:102
+                self.cfg.force_torque_obs_scale
+                * self.fingertip_force_sensors.view(self.num_envs, self.num_fingertips * 6), # 102:132
+                # base policy obs
+                self.goal_rot, # 132:136
+                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits), # 136:160
+                self.actions, # 160:180
+            ),
+            dim=-1,
+        )
+        return obs
+    def compute_rma_embeddings_observations(self):
+        obs = torch.cat(
+            (
+                self.goal_rot, # 0:4
+                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits), # 4:28
+                self.actions, # 28:48
+                self.embeddings, # 48: 48+num_embeddings
+            ),
+            dim=-1
+        )
+        return obs
 
 
 @torch.jit.script

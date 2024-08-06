@@ -274,3 +274,45 @@ class ShadowHandOpenAIEnvCfg(ShadowHandEnvCfg):
         noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.002, operation="add"),
         bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.0001, operation="abs"),
     )
+
+@configclass
+class ShadowHandRMAEnvConfig(ShadowHandEnvCfg):
+    # simulation
+    sim: SimulationCfg = SimulationCfg(
+        dt=1 / 60,
+        physics_material=RigidBodyMaterialCfg(
+            static_friction=1.0,
+            dynamic_friction=1.0,
+        ),
+        physx=PhysxCfg(
+            bounce_threshold_velocity=0.2,
+            gpu_max_rigid_contact_count=2**23,
+            gpu_max_rigid_patch_count=2**23,
+        ),
+    )
+    # env
+    decimation = 3
+    episode_length_s = 8.0
+    num_actions = 20
+    num_observations = 180
+    num_states = 187
+    asymmetric_obs = True
+    obs_type = "full_rma"
+    # reset
+    reset_position_noise = 0.01  # range of position at reset
+    reset_dof_pos_noise = 0.2  # range of dof pos at reset
+    reset_dof_vel_noise = 0.0  # range of dof vel at reset
+    # reward scales
+    dist_reward_scale = -10.0
+    rot_reward_scale = 1.0
+    rot_eps = 0.1
+    action_penalty_scale = -0.0002
+    reach_goal_bonus = 250
+    fall_penalty = -50
+    fall_dist = 0.24
+    vel_obs_scale = 0.2
+    success_tolerance = 0.4
+    max_consecutive_success = 50
+    av_factor = 0.1
+    act_moving_average = 0.3
+    force_torque_obs_scale = 10.0
