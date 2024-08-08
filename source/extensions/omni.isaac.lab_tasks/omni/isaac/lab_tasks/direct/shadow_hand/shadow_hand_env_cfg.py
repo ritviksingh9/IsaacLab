@@ -294,7 +294,7 @@ class ShadowHandRMAEnvConfig(ShadowHandEnvCfg):
     decimation = 3
     episode_length_s = 8.0
     num_actions = 20
-    num_observations = 180
+    num_observations = 180-30
     num_states = 187
     asymmetric_obs = True
     obs_type = "full_rma"

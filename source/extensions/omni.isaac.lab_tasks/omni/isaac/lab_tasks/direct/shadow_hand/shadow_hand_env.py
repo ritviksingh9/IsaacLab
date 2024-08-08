@@ -331,8 +331,8 @@ class ShadowHandEnv(DirectRLEnv):
                 self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3), # 37:52
                 self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4), # 52:72
                 self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6), # 72:102
-                self.cfg.force_torque_obs_scale
-                * self.fingertip_force_sensors.view(self.num_envs, self.num_fingertips * 6), # 102:132
+                # self.cfg.force_torque_obs_scale
+                # * self.fingertip_force_sensors.view(self.num_envs, self.num_fingertips * 6), # 102:132
                 # base policy obs
                 self.goal_rot, # 132:136
                 unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits), # 136:160
