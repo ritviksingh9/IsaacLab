@@ -9,7 +9,6 @@ parser = argparse.ArgumentParser(description="Train an RL agent with RL-Games.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
-parser.add_argument("--cpu", action="store_true", default=False, help="Use CPU pipeline.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
@@ -58,6 +57,8 @@ from rl_games_actor import AgentRLG
 from distillation_mgpu import Dagger
 from complex_net import A2CBuilder as ComplexNetworkBuilder
 from a2c_with_aux import A2CBuilder as A2CWithAuxBuilder
+from a2c_with_aux_res import A2CBuilder as A2CWithAuxResBuilder
+from a2c_with_aux_res_add import A2CBuilder as A2CWithAuxResAddBuilder
 
 
 def main():
@@ -68,7 +69,7 @@ def main():
 
     # parse configuration
     env_cfg = parse_env_cfg(
-        args_cli.task, use_gpu=not args_cli.cpu, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
+        args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
     agent_cfg = load_cfg_from_registry(args_cli.task, "rl_games_cfg_entry_point")
 
@@ -90,7 +91,7 @@ def main():
     student_cfg = os.path.join(
         parent_path,
         agent_cfg_folder,
-        "rl_games_ppo_lstm_aux_cfg.yaml"
+        "rl_games_ppo_lstm_aux_res_cfg.yaml"
     )
     teacher_cfg = os.path.join(
         parent_path,
@@ -124,6 +125,7 @@ def main():
         os.makedirs(summaries_dir, exist_ok=True)
     else:
         summaries_dir = None
+        nn_dir = None
 
     dagger_config = {
         "student": {
@@ -139,10 +141,12 @@ def main():
     }
     model_builder.register_network("complex_net", ComplexNetworkBuilder)
     model_builder.register_network("a2c_aux_net", A2CWithAuxBuilder)
-    dagger = Dagger(env, dagger_config, summaries_dir=summaries_dir)
+    model_builder.register_network("a2c_aux_res_net", A2CWithAuxResBuilder)
+    model_builder.register_network("a2c_aux_res_add_net", A2CWithAuxResAddBuilder)
+    dagger = Dagger(env, dagger_config, summaries_dir=summaries_dir, nn_dir=nn_dir)
     dagger.distill()
     if rank == 0:
-        dagger.save("sh_dist_no_vel_ff")
+        dagger.save("sh_dist_big_deep")
 
 
 if __name__ == "__main__":
