@@ -41,8 +41,10 @@ Guidelines for modifications:
 * Chenyu Yang
 * Jia Lin Yuan
 * Jingzhou Liu
+* Johnson Sun
 * Kourosh Darvish
 * Lorenz Wellhausen
+* Masoud Moghani
 * Muhong Guo
 * Nuralem Abizov
 * Özhan Özen
@@ -52,6 +54,7 @@ Guidelines for modifications:
 * Rosario Scalise
 * Shafeef Omar
 * Vladimir Fokow
+* Xavier Nal
 * Zhengyu Zhang
 * Ziqi Fan
 
