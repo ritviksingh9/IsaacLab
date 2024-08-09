@@ -10,7 +10,6 @@ Shadow Hand environment.
 import gymnasium as gym
 
 from . import agents
-from .shadow_hand_env import ShadowHandEnv
 from .shadow_hand_env_cfg import ShadowHandEnvCfg, ShadowHandOpenAIEnvCfg, ShadowHandRMAEnvConfig
 from .shadow_hand_camera_env import ShadowHandCameraEnv
 from .shadow_hand_camera_env_cfg import ShadowHandCameraEnvCfg 
@@ -42,6 +41,17 @@ gym.register(
 )
 
 gym.register(
+    id="Isaac-Repose-Cube-Camera-Direct-v0",
+    entry_point="omni.isaac.lab_tasks.direct.inhand_manipulation:InHandManipulationCameraEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": ShadowHandCameraEnvCfg,
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ShadowHandAsymFFPPORunnerCfg",
+    },
+)
+
+gym.register(
     id="Isaac-Repose-Cube-Shadow-OpenAI-LSTM-Direct-v0",
     entry_point="omni.isaac.lab_tasks.direct.inhand_manipulation:InHandManipulationEnv",
     disable_env_checker=True,
@@ -63,7 +73,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Shadow-Hand-RMA-Direct-v0",
-    entry_point="omni.isaac.lab_tasks.direct.shadow_hand:ShadowHandEnv",
+    entry_point="omni.isaac.lab_tasks.direct.inhand_manipulation:InHandManipulationEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": ShadowHandRMAEnvConfig,

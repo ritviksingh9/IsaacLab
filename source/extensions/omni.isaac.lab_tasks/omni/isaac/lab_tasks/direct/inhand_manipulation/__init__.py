@@ -4,3 +4,4 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from .inhand_manipulation_env import InHandManipulationEnv
+from .inhand_manipulation_camera_env import InHandManipulationCameraEnv

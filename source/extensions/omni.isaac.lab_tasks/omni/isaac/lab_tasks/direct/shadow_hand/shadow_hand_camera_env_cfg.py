@@ -119,8 +119,8 @@ class ShadowHandCameraEnvCfg(DirectRLEnvCfg):
     num_actions = 20
     num_states = 0
     asymmetric_obs = True
-    # obs_type = "embedding"
-    obs_type = "rma_embedding"
+    obs_type = "embedding"
+    # obs_type = "rma_embedding"
 
     # simulation
     sim: SimulationCfg = SimulationCfg(
@@ -230,10 +230,10 @@ class ShadowHandCameraEnvCfg(DirectRLEnvCfg):
         "convnext": 768,
     }[embedding_model]
     # num_observations = 137 + embedding_size  # (full)
-    # num_observations = 83 + embedding_size #(no velocity information)
-    num_observations = 48 + embedding_size # rma obs
-    # num_teacher_observations = 157
-    num_teacher_observations = 180
+    num_observations = 83 + embedding_size #(no velocity information)
+    # num_observations = 48 + embedding_size # rma obs
+    num_teacher_observations = 157
+    # num_teacher_observations = 180-30
     finetune_backbone = False
     visualize_marker = False
 

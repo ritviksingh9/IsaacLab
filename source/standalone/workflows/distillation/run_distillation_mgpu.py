@@ -103,7 +103,7 @@ def main():
     num_teacher_obs = ov_env.num_teacher_observations
     num_actions = ov_env.num_actions
     student_ckpt = None
-    teacher_ckpt = "pretrained_ckpts/teacher.ckpt"
+    teacher_ckpt = "pretrained_ckpts/teacher_allegro.ckpt"
     teacher_ckpt = os.path.join(
         parent_path,
         teacher_ckpt

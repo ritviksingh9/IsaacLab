@@ -46,13 +46,11 @@ def rescale_actions(low, high, action):
 
 
 class Dagger:
-    def __init__(self, env, config, summaries_dir):
+    def __init__(self, env, config, summaries_dir, nn_dir):
         self.world_size = int(os.environ['WORLD_SIZE'])  # Total number of processes
         self.rank = int(os.environ['RANK'])  # Global rank of this process
         self.local_rank = int(os.environ['LOCAL_RANK']) # local rank of the process 
-        # dist.init_process_group("nccl", rank=self.rank, world_size=self.world_size)
         torch.cuda.set_device(self.local_rank)
-        # torch.autograd.set_detect_anomaly(True)
 
         self.env = env
         self.ov_env = env.env
@@ -98,6 +96,7 @@ class Dagger:
         # load the base mlp
         teacher_state_dict = self.teacher_model.state_dict()
         trainable_params = list()
+        trainable_param_names = list()
         for name, param in self.student_model.named_parameters():
             if name in teacher_state_dict:
                 param.data.copy_(teacher_state_dict[name].data)
@@ -105,6 +104,8 @@ class Dagger:
             else:
                 param.requires_grad = True
                 trainable_params.append(param)
+                trainable_param_names.append(name)
+
         for param in self.student_model.parameters():
             dist.broadcast(param.data, src=0)
         # create DDP object for student
@@ -118,27 +119,10 @@ class Dagger:
 
         self.optimizer = torch.optim.Adam(
             trainable_params,
-            lr=1e-3, eps=1e-8
+            lr=8e-4, eps=1e-8
         )
-        # self.optimizer = torch.optim.Adam(self.student_model_ddp.parameters(), lr=1e-3, eps=1e-8)
         self.num_warmup_steps = 1000
         self.num_iters = 350000
-        def lr_lambda(current_step):
-            if current_step < self.num_warmup_steps:
-                # Linear warmup
-                print(                    self.warm_up_lr + 
-                    float(current_step) / self.num_warmup_steps * (self.peak_lr - self.warm_up_lr))
-                return (
-                    self.warm_up_lr + 
-                    float(current_step) / self.num_warmup_steps * (self.peak_lr - self.warm_up_lr)
-                )
-            else:
-                # Decay
-                return (
-                    float(self.num_iters - current_step) / 
-                    float(self.num_iters - self.warmup_steps) * self.peak_lr
-                )
-        # self.scheduler = LambdaLR(self.optimizer, lr_lambda)
 
         # get the observation type of the student and teacher
         self.student_obs_type = self.config["student"]["obs_type"]
@@ -164,10 +148,11 @@ class Dagger:
 
         if self.rank == 0:
             self.writer = SummaryWriter(summaries_dir)
-            self.use_wandb = False
+            self.use_wandb = True
             import pathlib
             parent_path = str(pathlib.Path(__file__).parent.parent.parent.parent.parent.resolve())
             summaries_dir = os.path.join(parent_path, summaries_dir)
+            self.nn_dir = os.path.join(parent_path, nn_dir)
             if self.use_wandb:
                 wandb.login(key=os.environ["WANDB_API_KEY"])
                 # wandb.tensorboard.patch(root_logdir=summaries_dir)
@@ -205,15 +190,11 @@ class Dagger:
         self.student_model.train()
         self.teacher_model.eval()
 
-        # actions = self.prev_actions.clone()
 
         obs = self.env.reset()[0]
 
         log_counter = 0
         total_loss = 0.
-
-        # for param in self.student_model_ddp.parameters():
-        #     param.grad = None
 
         self.optimizer.zero_grad()
 
@@ -244,20 +225,14 @@ class Dagger:
                 if log_counter % self.seq_length == 0:
                     total_loss.backward()
                     self.optimizer.step()
-                    # for param in self.student_model_ddp.parameters():
-                    #     param.grad = None
                     self.optimizer.zero_grad()
                     for s in self.student_hidden_states:
                         s = s.detach()
                     total_loss = 0.
-                    # self.scheduler.step()
             else:
-                # for param in self.student_model_ddp.parameters():
-                #     param.grad = None
                 self.optimizer.zero_grad()
                 total_loss.backward()
                 self.optimizer.step()
-                # self.scheduler.step()
                 total_loss = 0.
             
             stepping_actions = actions_student["actions"]
@@ -282,12 +257,12 @@ class Dagger:
             self.current_rewards = self.current_rewards * not_dones.unsqueeze(1)
             self.current_lengths = self.current_lengths * not_dones
 
-            # if log_counter < self.num_warmup_steps:
-            #     self.optimizer.param_groups[0]["lr"] = (log_counter / self.num_warmup_steps) * 1e-3 
-            # elif log_counter % 10000 == 0:
-            if log_counter % 10000 == 0 and log_counter > 10 and self.optimizer.param_groups[0]["lr"] > 1.2*1e-5:
+            if log_counter % 2500 == 0 and log_counter > 10 and self.optimizer.param_groups[0]["lr"] > 1.2*1e-5:
                 self.optimizer.param_groups[0]["lr"] /= 1.2
-            #     # breakpoint()
+
+            if self.rank == 0 and log_counter % 5000 == 0:
+                ckpt_path = os.path.join(self.nn_dir,f"sh_rma_{log_counter}_iters")
+                self.save(ckpt_path)
 
         if self.use_wandb:
             wandb.finish()

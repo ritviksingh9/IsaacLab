@@ -46,7 +46,7 @@ params:
         before_mlp: True
         layer_norm: True
       mlp:
-        units: [1024]
+        units: [1024, 512, 256, 128]
         activation: elu
         d2rl: False
         out_activation: None

@@ -46,7 +46,7 @@ def rescale_actions(low, high, action):
 
 
 class Dagger:
-    def __init__(self, env, config, summaries_dir):
+    def __init__(self, env, config, summaries_dir, nn_dir):
         self.world_size = int(os.environ['WORLD_SIZE'])  # Total number of processes
         self.rank = int(os.environ['RANK'])  # Global rank of this process
         self.local_rank = int(os.environ['LOCAL_RANK']) # local rank of the process 
@@ -149,10 +149,11 @@ class Dagger:
 
         if self.rank == 0:
             self.writer = SummaryWriter(summaries_dir)
-            self.use_wandb = False
+            self.use_wandb = True
             import pathlib
             parent_path = str(pathlib.Path(__file__).parent.parent.parent.parent.parent.resolve())
             summaries_dir = os.path.join(parent_path, summaries_dir)
+            self.nn_dir = os.path.join(parent_path, nn_dir)
             if self.use_wandb:
                 wandb.login(key=os.environ["WANDB_API_KEY"])
                 # wandb.tensorboard.patch(root_logdir=summaries_dir)
@@ -210,19 +211,22 @@ class Dagger:
             with torch.no_grad():
                 actions_teacher = self.get_actions(obs, "teacher")
             actions_student = self.get_actions(obs, "student")
-            aux_loss = 0.
-
+            aux_loss = list() if self.is_aux else [0.]
             if actions_student["aux"] is not None:
                 aux_out = actions_student["aux"]
+                self.aux_loss_names = aux_out.keys()
                 aux_gt = obs["aux_info"]
-                for aux_name in aux_out.keys():
-                    aux_loss += self.loss(aux_out[aux_name], aux_gt[aux_name].reshape(self.num_envs, -1))
+                for aux_name in self.aux_loss_names:
+                    num_vals = aux_out[aux_name].shape[-1]
+                    aux_loss.append(
+                        self.loss(aux_out[aux_name], aux_gt[aux_name].reshape(self.num_envs, -1)) #/ num_vals
+                    )
 
             student_loss = (
                 self.loss(actions_student["mus"], actions_teacher["mus"]) +
                 self.loss(actions_student["sigmas"], actions_teacher["sigmas"])
             )
-            total_loss += student_loss + aux_loss
+            total_loss += student_loss + sum(aux_loss)
 
             if self.rank == 0:
                 self.log_information(log_counter, total_loss, aux_loss)
@@ -277,12 +281,15 @@ class Dagger:
             if log_counter % 10000 == 0 and log_counter > 10 and self.optimizer.param_groups[0]["lr"] > 1.2*1e-5:
                 self.optimizer.param_groups[0]["lr"] /= 1.2
             #     # breakpoint()
+            if self.rank == 0 and log_counter % 5000 == 0:
+                ckpt_path = os.path.join(self.nn_dir,f"sh_{log_counter}_iters")
+                self.save(ckpt_path)
 
         if self.use_wandb:
             wandb.finish()
 
     def log_information(self, log_counter, total_loss, aux_loss=None):
-        student_loss = total_loss if aux_loss is None else total_loss - aux_loss
+        student_loss = total_loss if aux_loss is None else total_loss - sum(aux_loss)
         
         if self.game_rewards.current_size > 0:
             mean_rewards = self.game_rewards.get_mean()
@@ -311,14 +318,15 @@ class Dagger:
                         "iteration": self.frame
                     })
                 if self.is_aux:
-                    self.writer.add_scalar(
-                        "aux_loss", aux_loss.detach().cpu().numpy(), self.frame
-                    )
-                    if self.use_wandb:
-                        wandb.log({
-                            "aux_loss": aux_loss.detach().cpu().numpy(),
-                            "iteration": self.frame
-                        })
+                    for idx, name in enumerate(self.aux_loss_names):
+                        self.writer.add_scalar(
+                            f"aux_loss_{name}", aux_loss[i].detach().cpu().numpy(), self.frame
+                        )
+                        if self.use_wandb:
+                            wandb.log({
+                                f"aux_loss_{name}": aux_loss[i].detach().cpu().numpy(),
+                                "iteration": self.frame
+                            })
 
         if log_counter % 10 == 0:
             print("="*10)

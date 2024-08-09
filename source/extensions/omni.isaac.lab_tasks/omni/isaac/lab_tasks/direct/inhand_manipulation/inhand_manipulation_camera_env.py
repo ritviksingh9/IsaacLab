@@ -27,13 +27,14 @@ from omni.isaac.lab.markers import VisualizationMarkers
 from omni.isaac.lab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from omni.isaac.lab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
 
-from .shadow_hand_camera_env_cfg import ShadowHandCameraEnvCfg
+from omni.isaac.lab_tasks.direct.allegro_hand import AllegroHandEnvCfg
+from omni.isaac.lab_tasks.direct.shadow_hand import ShadowHandEnvCfg, ShadowHandCameraEnvCfg
 
 
-class ShadowHandCameraEnv(DirectRLEnv):
-    cfg: ShadowHandCameraEnvCfg
+class InHandManipulationCameraEnv(DirectRLEnv):
+    cfg: AllegroHandEnvCfg | ShadowHandEnvCfg
 
-    def __init__(self, cfg: ShadowHandCameraEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: AllegroHandEnvCfg | ShadowHandEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         self.world_size = int(os.environ['WORLD_SIZE'])  # Total number of processes
@@ -76,10 +77,8 @@ class ShadowHandCameraEnv(DirectRLEnv):
         self.goal_rot[:, 0] = 1.0
         self.goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.goal_pos[:, :] = torch.tensor([-0.2, -0.45, 0.68], device=self.device)
-        self.keypoints = torch.zeros((self.num_envs, 8, 3), dtype=torch.float, device=self.device)
         # initialize goal marker
         self.goal_markers = VisualizationMarkers(self.cfg.goal_object_cfg)
-        self.kpt_markers = [VisualizationMarkers(self.cfg.goal_keypoint_cfg[i]) for i in range(8)]
 
         # track successes
         self.successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -119,7 +118,6 @@ class ShadowHandCameraEnv(DirectRLEnv):
 
         self.visualize_marker = self.cfg.visualize_marker
 
-
     def _get_padded_dims(self, width, height, n):
         padded_dims = list()
 
@@ -133,7 +131,7 @@ class ShadowHandCameraEnv(DirectRLEnv):
         return tuple(padded_dims)
 
     def _setup_scene(self):
-        # add hand, in-hand object, and camera
+        # add hand, in-hand object, and goal object
         self.hand = Articulation(self.cfg.robot_cfg)
         self.object = RigidObject(self.cfg.object_cfg)
         self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
@@ -226,7 +224,7 @@ class ShadowHandCameraEnv(DirectRLEnv):
         # np_imgs = (imgs.cpu().numpy()*255).astype(np.uint8)
         # im = Image.fromarray(np_imgs[0])
         # breakpoint()
-        if self.cfg.asymmetric_obs or "rma" in self.cfg.obs_type:
+        if self.cfg.asymmetric_obs or self.cfg.obs_type == "full_rma":
             self.fingertip_force_sensors = self.hand.root_physx_view.get_link_incoming_joint_force()[
                 :, self.finger_bodies
             ]
@@ -237,11 +235,10 @@ class ShadowHandCameraEnv(DirectRLEnv):
             obs = self.compute_full_observations()
         elif self.cfg.obs_type == "embedding":
             self._get_embeddings({"policy": self._tiled_camera.data.output["rgb"].clone()})
-            # obs = self.compute_embeddings_observations()
             obs = self.compute_embeddings_observation_no_vel()
-        elif self.cfg.obs_type == "rma_embedding":
+        elif self.cfg.obs_type == "full_rma":
             self._get_embeddings({"policy": self._tiled_camera.data.output["rgb"].clone()})
-            obs = self.compute_rma_embeddings_observations()
+            obs = self.compute_full_rma_observations()
         else:
             print("Unknown observations type!")
 
@@ -251,7 +248,7 @@ class ShadowHandCameraEnv(DirectRLEnv):
         observations = {"policy": obs}
         if self.cfg.asymmetric_obs:
             observations = {"policy": obs, "critic": states}
-        
+
         if "rma" in self.cfg.obs_type:
             observations["expert_policy"] = self.compute_full_rma_observations()
         else:
@@ -416,10 +413,10 @@ class ShadowHandCameraEnv(DirectRLEnv):
         #   Relative target orientation
         obs = torch.cat(
             (
-                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),  # 0:15
-                self.object_pos,  # 15:18
-                quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),  # 18:22
-                self.actions,  # 22:42
+                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
+                self.object_pos,
+                quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),
+                self.actions,
             ),
             dim=-1,
         )
@@ -430,23 +427,23 @@ class ShadowHandCameraEnv(DirectRLEnv):
         obs = torch.cat(
             (
                 # hand
-                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),  # 0:24
-                self.cfg.vel_obs_scale * self.hand_dof_vel,  # 24:48
+                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
+                self.cfg.vel_obs_scale * self.hand_dof_vel,
                 # object
-                self.object_pos,  # 48:51
-                self.object_rot,  # 51:55
-                self.object_linvel,  # 55:58
-                self.cfg.vel_obs_scale * self.object_angvel,  # 58:61
+                self.object_pos,
+                self.object_rot,
+                self.object_linvel,
+                self.cfg.vel_obs_scale * self.object_angvel,
                 # goal
-                self.in_hand_pos,  # 61:64
-                self.goal_rot,  # 64:68
-                quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),  # 68:72
+                self.in_hand_pos,
+                self.goal_rot,
+                quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),
                 # fingertips
-                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),  # 72:87
-                self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),  # 87:107
-                self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),  # 107:137
+                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
+                self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
+                self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),
                 # actions
-                self.actions,  # 137:157
+                self.actions,
             ),
             dim=-1,
         )
@@ -492,34 +489,6 @@ class ShadowHandCameraEnv(DirectRLEnv):
         )
         return obs
 
-    def compute_full_state(self):
-        states = torch.cat(
-            (
-                # hand
-                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),  # 0:24
-                self.cfg.vel_obs_scale * self.hand_dof_vel,  # 24:48
-                # object
-                self.object_pos,  # 48:51
-                self.object_rot,  # 51:55
-                self.object_linvel,  # 55:58
-                self.cfg.vel_obs_scale * self.object_angvel,  # 58:61
-                # goal
-                self.in_hand_pos,  # 61:64
-                self.goal_rot,  # 64:68
-                quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),  # 68:72
-                # fingertips
-                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),  # 72:87
-                self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),  # 87:107
-                self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),  # 107:137
-                self.cfg.force_torque_obs_scale
-                * self.fingertip_force_sensors.view(self.num_envs, self.num_fingertips * 6),  # 137:167
-                # actions
-                self.actions,  # 167:187
-            ),
-            dim=-1,
-        )
-        return states
-
     def compute_full_rma_observations(self):
         obs = torch.cat(
             (
@@ -542,6 +511,35 @@ class ShadowHandCameraEnv(DirectRLEnv):
             dim=-1,
         )
         return obs
+
+    def compute_full_state(self):
+        states = torch.cat(
+            (
+                # hand
+                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
+                self.cfg.vel_obs_scale * self.hand_dof_vel,
+                # object
+                self.object_pos,
+                self.object_rot,
+                self.object_linvel,
+                self.cfg.vel_obs_scale * self.object_angvel,
+                # goal
+                self.in_hand_pos,
+                self.goal_rot,
+                quat_mul(self.object_rot, quat_conjugate(self.goal_rot)),
+                # fingertips
+                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),
+                self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),
+                self.fingertip_velocities.view(self.num_envs, self.num_fingertips * 6),
+                self.cfg.force_torque_obs_scale
+                * self.fingertip_force_sensors.view(self.num_envs, self.num_fingertips * 6),
+                # actions
+                self.actions,
+            ),
+            dim=-1,
+        )
+        return states
+
 
     def compute_rma_embeddings_observations(self):
         obs = torch.cat(
