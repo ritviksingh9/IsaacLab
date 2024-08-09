@@ -53,7 +53,6 @@ from omni.isaac.lab.utils.io import dump_pickle, dump_yaml
 import omni.isaac.lab_tasks  # noqa: F401
 from omni.isaac.lab_tasks.utils import load_cfg_from_registry, parse_env_cfg
 from omni.isaac.lab_tasks.utils.wrappers.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
-from rl_games_actor import AgentRLG
 from distillation_rma import Dagger
 
 from source.standalone.workflows.rl_games.a2c_rma import A2CBuilder as A2CWithRMABuilderTeacher
