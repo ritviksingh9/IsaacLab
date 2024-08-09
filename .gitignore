@@ -57,3 +57,5 @@ _build
 **/runs/*
 **/logs/*
 **/recordings/*
+**/files_to_ignore/*
+**/pretrained_ckpts/*
