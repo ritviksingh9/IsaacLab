@@ -101,7 +101,7 @@ class Dagger:
         if self.finetune_backbone:
             params.append({"params": self.ov_env.backbone_ddp.parameters(), "lr": 1e-5, "eps": 1e-8})
         # self.optimizer = torch.optim.Adam(params)
-        self.optimizer = torch.optim.Adam(self.student_model_ddp.parameters(), lr=1e-3, eps=1e-8)
+        self.optimizer = torch.optim.Adam(self.student_model_ddp.parameters(), lr=1e-3*self.world_size, eps=1e-8)
         self.num_warmup_steps = 1000
         self.num_iters = 350000
         def lr_lambda(current_step):
@@ -129,9 +129,12 @@ class Dagger:
         self.student_obs_type = self.config["student"]["obs_type"]
         self.teacher_obs_type = self.config["teacher"]["obs_type"]
         self.is_rnn = self.student_model.is_rnn()
+        self.is_teacher_rnn = self.teacher_model.is_rnn()
         if self.is_rnn:
             self.seq_length = self.student_network_params["config"]["seq_length"]
             print("USING RNN")
+        if self.is_teacher_rnn:
+            print("USING TEACHER RNN")
         if hasattr(self.student_model.a2c_network, "is_aux") and self.student_model.a2c_network.is_aux:
             self.is_aux = True
             print("USING AUX")
@@ -186,6 +189,11 @@ class Dagger:
             self.student_hidden_states = self.student_model.get_default_rnn_state()
             self.student_hidden_states = [s.to(self.device) for s in self.student_hidden_states]
             self.num_seqs = self.horizon_length // self.seq_length
+        
+        if self.is_teacher_rnn:
+            self.teacher_hidden_states = self.teacher_model.get_default_rnn_state()
+            self.teacher_hidden_states = [s.to(self.device) for s in self.teacher_hidden_states]
+            # self.num_seqs = self.horizon_length // self.seq_length
 
     def distill(self):
         self.student_model.train()
@@ -207,7 +215,6 @@ class Dagger:
 
         while log_counter < num_iters:
             beta = max(1 - log_counter / (num_iters / 2), 0)
-
             with torch.no_grad():
                 actions_teacher = self.get_actions(obs, "teacher")
             actions_student = self.get_actions(obs, "student")
@@ -254,6 +261,7 @@ class Dagger:
                 total_loss = 0.
             
             stepping_actions = actions_student["actions"]
+            # stepping_actions = actions_teacher["actions"]
             obs, rew, out_of_reach, timed_out, info = self.env.step(
                 stepping_actions.detach()
             )
@@ -267,6 +275,11 @@ class Dagger:
             if self.is_rnn and len(all_done_indices) > 0:
                 for s in self.student_hidden_states:
                     s[:, all_done_indices, ...] *= 0.
+
+            if self.is_teacher_rnn and len(all_done_indices) > 0:
+                for s in self.teacher_hidden_states:
+                    s[:, all_done_indices, ...] *= 0.
+
 
             done_indices = all_done_indices[:]
             self.game_rewards.update(self.current_rewards[done_indices])
@@ -366,6 +379,11 @@ class Dagger:
                 "obs": obs[self.teacher_obs_type],
                 "prev_actions": self.prev_actions_teacher,
             }
+            if self.is_teacher_rnn:
+                batch_dict["rnn_states"] = self.teacher_hidden_states
+                batch_dict["seq_length"] = 1
+                batch_dict["rnn_masks"] = None
+
             res_dict = self.teacher_model(batch_dict)
             mus = res_dict["mus"]
             sigmas = res_dict["sigmas"]
