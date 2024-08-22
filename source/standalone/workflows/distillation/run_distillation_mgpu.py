@@ -58,6 +58,8 @@ from complex_net import A2CBuilder as ComplexNetworkBuilder
 from a2c_with_aux import A2CBuilder as A2CWithAuxBuilder
 from a2c_with_aux_res import A2CBuilder as A2CWithAuxResBuilder
 from a2c_with_aux_res_add import A2CBuilder as A2CWithAuxResAddBuilder
+from a2c_with_aux_cnn import A2CBuilder as A2CWithAuxCNNBuilder
+from a2c_with_aux_enc import A2CBuilder as A2CWithAuxEncBuilder
 
 
 def main():
@@ -90,19 +92,27 @@ def main():
     student_cfg = os.path.join(
         parent_path,
         agent_cfg_folder,
-        "rl_games_ppo_lstm_aux_res_cfg.yaml"
+        # "rl_games_ppo_lstm_cfg.yaml"
+        # "rl_games_ppo_lstm_aux_res_cfg.yaml"
+        "rl_games_ppo_lstm_aux_res_add_cfg.yaml"
+        # "rl_games_ppo_lstm_aux_cnn_cfg.yaml"
+        # "rl_games_ppo_lstm_enc_cfg.yaml"
     )
     teacher_cfg = os.path.join(
         parent_path,
         agent_cfg_folder,
         "rl_games_ppo_cfg.yaml"
+        # "dextreme_manual_dr.yaml"
     )
 
     num_student_obs = ov_env.num_observations
     num_teacher_obs = ov_env.num_teacher_observations
     num_actions = ov_env.num_actions
     student_ckpt = None
-    teacher_ckpt = "pretrained_ckpts/teacher_allegro.ckpt"
+    # student_ckpt = "/home/ritviks/workspace/git/IsaacLab/runs/Shadow-Hand-Camera-Distillation-MGPU_13-23-12-42/nn/sh_95000_iters.pth"
+    # student_ckpt = "/home/ritviks/workspace/git/IsaacLab/pretrained_ckpts/enc_dec.pth"
+    teacher_ckpt = "pretrained_ckpts/teacher.ckpt"
+    # teacher_ckpt = "pretrained_ckpts/dextreme_manual_dr.pth"
     teacher_ckpt = os.path.join(
         parent_path,
         teacher_ckpt
@@ -142,10 +152,12 @@ def main():
     model_builder.register_network("a2c_aux_net", A2CWithAuxBuilder)
     model_builder.register_network("a2c_aux_res_net", A2CWithAuxResBuilder)
     model_builder.register_network("a2c_aux_res_add_net", A2CWithAuxResAddBuilder)
+    model_builder.register_network("a2c_aux_cnn_net", A2CWithAuxCNNBuilder)
+    model_builder.register_network("a2c_enc_net", A2CWithAuxEncBuilder)
     dagger = Dagger(env, dagger_config, summaries_dir=summaries_dir, nn_dir=nn_dir)
     dagger.distill()
     if rank == 0:
-        dagger.save("sh_dist_big_deep")
+        dagger.save("sh_dist_scratch_cnn")
 
 
 if __name__ == "__main__":

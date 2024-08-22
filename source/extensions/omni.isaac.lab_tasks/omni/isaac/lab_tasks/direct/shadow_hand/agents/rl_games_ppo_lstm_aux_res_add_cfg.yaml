@@ -29,7 +29,7 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [512, 512]
+      units: [512, 512, 512]
       activation: elu
       d2rl: False
       num_modules: 3
@@ -41,23 +41,23 @@ params:
     rnn:
       name: lstm
       units: 1024
-      layers: 1
+      layers: 2
       before_mlp: True
       layer_norm: True
-    aux_network: 
-      mlp:
-        units: [512, 256]
-        activation: elu
-        out_activation: None # just nn linear layer on output
-        d2rl: False
+    # aux_network: 
+    #   mlp:
+    #     units: [512, 256]
+    #     activation: elu
+    #     out_activation: None # just nn linear layer on output
+    #     d2rl: False
 
-        initializer:
-          name: default
-        regularizer:
-          name: None
+    #     initializer:
+    #       name: default
+    #     regularizer:
+    #       name: None
 
-    aux_outputs:
-      keypoints: {size: 24}
+    # aux_outputs:
+    #   keypoints: {size: 24}
 
   load_checkpoint: False # flag which sets whether to load the checkpoint
   load_path: '' # path to the checkpoint to load

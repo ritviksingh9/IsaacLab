@@ -3,6 +3,7 @@ import torch
 import torch.distributed as dist
 from torch.optim.lr_scheduler import LambdaLR
 from torch.nn.parallel import DistributedDataParallel as DDP
+import torchvision.utils as vutils
 import yaml
 import os
 
@@ -25,6 +26,8 @@ from rl_games.algos_torch.model_builder import ModelBuilder
 from datetime import datetime
 from tensorboardX import SummaryWriter
 import wandb
+# from fvcore.nn import FlopCountAnalysis
+# from torchtnt.utils.flops import FlopTensorDispatchMode
 
 
 from typing import Dict
@@ -101,7 +104,7 @@ class Dagger:
         if self.finetune_backbone:
             params.append({"params": self.ov_env.backbone_ddp.parameters(), "lr": 1e-5, "eps": 1e-8})
         # self.optimizer = torch.optim.Adam(params)
-        self.optimizer = torch.optim.Adam(self.student_model_ddp.parameters(), lr=1e-3*self.world_size, eps=1e-8)
+        self.optimizer = torch.optim.Adam(self.student_model_ddp.parameters(), lr=7e-4, eps=1e-8)
         self.num_warmup_steps = 1000
         self.num_iters = 350000
         def lr_lambda(current_step):
@@ -140,6 +143,7 @@ class Dagger:
             print("USING AUX")
         else:
             self.is_aux = False
+        self.step_student_actions = True
 
         # logging
         self.games_to_track = 100
@@ -185,6 +189,10 @@ class Dagger:
             (self.num_envs,), dtype=torch.uint8, device=self.device
         )
 
+        self.actions_teacher = torch.zeros(
+            (self.num_envs, self.num_actions), dtype=torch.float32, device=self.device
+        )
+
         if self.is_rnn:
             self.student_hidden_states = self.student_model.get_default_rnn_state()
             self.student_hidden_states = [s.to(self.device) for s in self.student_hidden_states]
@@ -211,13 +219,22 @@ class Dagger:
 
         self.optimizer.zero_grad()
 
-        num_iters = 350000
+        # num_iters = 350000
+        num_iters = 250_000
 
         while log_counter < num_iters:
             beta = max(1 - log_counter / (num_iters / 2), 0)
+
+            # replace the previous actions of the student with the previous actions of the teacher
+            if not self.step_student_actions:
+                obs["policy"][:, -self.num_actions:] = self.actions_teacher
+
             with torch.no_grad():
                 actions_teacher = self.get_actions(obs, "teacher")
+                self.actions_teacher = actions_teacher["actions"]
+
             actions_student = self.get_actions(obs, "student")
+            
             aux_loss = list() if self.is_aux else [0.]
             if actions_student["aux"] is not None:
                 aux_out = actions_student["aux"]
@@ -225,9 +242,21 @@ class Dagger:
                 aux_gt = obs["aux_info"]
                 for aux_name in self.aux_loss_names:
                     num_vals = aux_out[aux_name].shape[-1]
-                    aux_loss.append(
-                        self.loss(aux_out[aux_name], aux_gt[aux_name].reshape(self.num_envs, -1)) #/ num_vals
-                    )
+                    if 'img' in aux_name:
+                        num_supervised_envs = aux_out[aux_name].shape[0]
+                        aux_loss.append(
+                            torch.mean(
+                                torch.norm(
+                                    (aux_out[aux_name] - aux_gt[aux_name][:num_supervised_envs]), 
+                                    p=2, dim=(1,2,3)),
+                            )
+                        )
+                        if self.rank == 0:
+                            self.log_img(aux_out[aux_name][:5], aux_gt[aux_name][:5])
+                    else:
+                        aux_loss.append(
+                            self.loss(aux_out[aux_name], aux_gt[aux_name].reshape(self.num_envs, -1)) #/ num_vals
+                        )
 
             student_loss = (
                 self.loss(actions_student["mus"], actions_teacher["mus"]) +
@@ -252,15 +281,12 @@ class Dagger:
                     total_loss = 0.
                     # self.scheduler.step()
             else:
-                # for param in self.student_model_ddp.parameters():
-                #     param.grad = None
                 self.optimizer.zero_grad()
                 total_loss.backward()
                 self.optimizer.step()
-                # self.scheduler.step()
                 total_loss = 0.
             
-            stepping_actions = actions_student["actions"]
+            stepping_actions = actions_student["actions"] if self.step_student_actions else actions_teacher["actions"]
             # stepping_actions = actions_teacher["actions"]
             obs, rew, out_of_reach, timed_out, info = self.env.step(
                 stepping_actions.detach()
@@ -287,14 +313,14 @@ class Dagger:
             not_dones = 1.0 - self.dones.float()
             self.current_rewards = self.current_rewards * not_dones.unsqueeze(1)
             self.current_lengths = self.current_lengths * not_dones
+            self.actions_teacher[done_indices] *= 0.
 
             # if log_counter < self.num_warmup_steps:
             #     self.optimizer.param_groups[0]["lr"] = (log_counter / self.num_warmup_steps) * 1e-3 
             # elif log_counter % 10000 == 0:
             if log_counter % 10000 == 0 and log_counter > 10 and self.optimizer.param_groups[0]["lr"] > 1.2*1e-5:
                 self.optimizer.param_groups[0]["lr"] /= 1.2
-            #     # breakpoint()
-            if self.rank == 0 and log_counter % 5000 == 0:
+            if self.rank == 0 and log_counter % 10000 == 0:
                 ckpt_path = os.path.join(self.nn_dir,f"sh_{log_counter}_iters")
                 self.save(ckpt_path)
 
@@ -353,6 +379,14 @@ class Dagger:
                 print("\tMean Length: ", mean_lengths)
                 print("\tConsecutive Successes: ", self.ov_env.consecutive_successes)
 
+    def log_img(self, pred_images, gt_images):
+        combined_images = torch.cat((pred_images, gt_images), dim=0)
+        image_grid = vutils.make_grid(combined_images, nrow=pred_images.shape[0], normalize=True, scale_each=True)
+        self.writer.add_image('Predictions vs Ground Truth', image_grid, global_step=self.frame)
+        if self.use_wandb:
+            images = wandb.Image(image_grid, caption="Top: Network Pred, Bottom: GT")
+            wandb.log({"predictions vs ground truth": images})
+
     def get_actions(self, obs, policy_type):
         aux = None
         if policy_type == "student":
@@ -362,17 +396,25 @@ class Dagger:
                 "observations": obs[self.student_obs_type],
                 "prev_actions": self.prev_actions_student,
             }
+            if "img" in obs:
+                mean_tensor = torch.mean(obs["img"], dim=(1, 2), keepdim=True)
+                batch_dict["img"] = obs["img"] - mean_tensor
             if self.is_rnn:
                 batch_dict["rnn_states"] = self.student_hidden_states
                 batch_dict["seq_length"] = 1
                 batch_dict["rnn_masks"] = None
+            # flops = FlopCountAnalysis(self.student_model_ddp, batch_dict)
+            # with FlopTensorDispatchMode(self.student_model_ddp) as ftdm:
             res_dict = self.student_model_ddp(batch_dict)
             mus = res_dict["mus"]
             sigmas = res_dict["sigmas"]
             if self.is_rnn:
-                self.student_hidden_states = [s.detach() for s in res_dict["rnn_states"][0]]
+                if self.is_aux:
+                    self.student_hidden_states = [s.detach() for s in res_dict["rnn_states"][0]]
+                else:
+                    self.student_hidden_states = [s.detach() for s in res_dict["rnn_states"]]
             if self.is_aux:
-                aux = res_dict["rnn_states"][-1]
+                aux = res_dict["rnn_states"][1]
         else:
             batch_dict = {
                 "is_train": False,
@@ -383,7 +425,6 @@ class Dagger:
                 batch_dict["rnn_states"] = self.teacher_hidden_states
                 batch_dict["seq_length"] = 1
                 batch_dict["rnn_masks"] = None
-
             res_dict = self.teacher_model(batch_dict)
             mus = res_dict["mus"]
             sigmas = res_dict["sigmas"]
@@ -411,6 +452,7 @@ class Dagger:
         weights = torch_ext.load_checkpoint(ckpt)
         if policy_type == "student":
             model = self.student_model
+            breakpoint()
             # self.epoch_num = weights.get('epoch', 0)
             # self.optimizer.load_state_dict(weights['optimizer'])
             # self.frame = weights.get('frame', 0)

@@ -148,7 +148,7 @@ class Dagger:
 
         if self.rank == 0:
             self.writer = SummaryWriter(summaries_dir)
-            self.use_wandb = True
+            self.use_wandb = False
             import pathlib
             parent_path = str(pathlib.Path(__file__).parent.parent.parent.parent.parent.resolve())
             summaries_dir = os.path.join(parent_path, summaries_dir)
@@ -213,7 +213,10 @@ class Dagger:
                 for aux_name in aux_out.keys():
                     aux_loss += self.loss(aux_out[aux_name], aux_gt[aux_name].reshape(self.num_envs, -1))
 
-            student_loss = self.loss(actions_student["latents"], actions_teacher["latents"])
+            student_loss = self.loss(actions_student["latents"], actions_teacher["latents"]) + (
+                self.loss(actions_student["mus"], actions_teacher["mus"]) + 
+                self.loss(actions_student["sigmas"], actions_teacher["sigmas"]) 
+            )
             total_loss += student_loss + aux_loss
 
             if self.rank == 0:
