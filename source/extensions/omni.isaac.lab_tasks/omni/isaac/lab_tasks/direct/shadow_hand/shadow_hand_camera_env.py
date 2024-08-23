@@ -30,6 +30,57 @@ from omni.isaac.lab.utils.math import quat_conjugate, quat_from_angle_axis, quat
 from .shadow_hand_camera_env_cfg import ShadowHandCameraEnvCfg
 
 
+class SimpleImageEncoder(nn.Module):
+    def __init__(self, input_shape, depth=128, mults=(1, 2, 4, 2), layers=5, units=64, norm='batch', act='gelu', kernel=4, minres=4):
+        super(SimpleImageEncoder, self).__init__()
+        self.minres = minres
+
+        # Activation function
+        self.activation = nn.GELU() if act == 'gelu' else nn.ReLU()
+        
+        # Image encoder
+        self.img_channels, self.img_height, self.img_width = input_shape
+        self.conv_layers = []
+        in_channels = self.img_channels
+        
+        for mult in mults:
+            out_channels = depth * mult
+            self.conv_layers.append(
+                nn.Conv2d(in_channels, out_channels, kernel_size=kernel, stride=2, padding=1)
+            )
+            if norm == 'batch':
+                self.conv_layers.append(nn.BatchNorm2d(out_channels))
+            self.conv_layers.append(self.activation)
+            in_channels = out_channels
+        
+        self.conv_layers = nn.Sequential(*self.conv_layers)
+
+        # Calculate final feature map size
+        self._initialize_fc_layers()
+
+        self.fc_layers = nn.Sequential(
+            nn.Linear(self.final_size, units),
+            self.activation,
+            *[
+                nn.Linear(units, units) for _ in range(layers - 1)
+            ]
+        )
+
+    def _initialize_fc_layers(self):
+        with torch.no_grad():
+            # Create a dummy input tensor with the same size as your image
+            dummy_input = torch.zeros(1, self.img_channels, self.img_height, self.img_width)
+            dummy_output = self.conv_layers(dummy_input)
+            # Calculate the flattened size of the conv layer output
+            self.final_size = dummy_output.view(1, -1).size(1)
+
+    def forward(self, img):
+        x = img  # Assume img is already normalized
+        x = self.conv_layers(x)
+        x = x.reshape(x.size(0), -1)  # Flatten
+        x = self.fc_layers(x)
+        return x
+    
 class ShadowHandCameraEnv(DirectRLEnv):
     cfg: ShadowHandCameraEnvCfg
 
@@ -104,6 +155,7 @@ class ShadowHandCameraEnv(DirectRLEnv):
             self.img_height,
             n=14
         )
+        self.img_reconstruction = self.cfg.img_reconstruction
         self.num_observations = self.cfg.num_observations
         self.num_teacher_observations = self.cfg.num_teacher_observations
         self.img = torch.zeros(
@@ -118,6 +170,10 @@ class ShadowHandCameraEnv(DirectRLEnv):
         ).to(self.device)
 
         self.visualize_marker = self.cfg.visualize_marker
+
+        self.camera_pos_center = self.cfg.camera_pos
+        self.camera_orientation_center = self.cfg.camera_orientation
+        self.randomize_camera_pose = self.cfg.randomize_camera_pose
 
 
     def _get_padded_dims(self, width, height, n):
@@ -172,6 +228,19 @@ class ShadowHandCameraEnv(DirectRLEnv):
             for p in convnext.parameters():
                 p.requires_grad = False
             model = convnext
+        elif model_name == "custom_enc":
+            model = SimpleImageEncoder((3, 256, 256))
+            state_dict = torch.load("/home/ritviks/workspace/git/IsaacLab/pretrained_ckpts/enc_dec.pth")["model"]
+            filtered_state_dict = {k.replace('a2c_network.', ''): v for k, v in state_dict.items() if 'encoder' in k}
+            filtered_state_dict = {k.replace('img_encoder.', ''): v for k, v in filtered_state_dict.items()}
+            model.load_state_dict(filtered_state_dict)
+            for p in model.parameters():
+                p.requires_grad = False
+        elif model_name == "vit":
+            model = models.vit_b_16(pretrained=True)
+            model.heads = nn.Identity()
+            for p in model.parameters():
+                p.requires_grad = self.finetune_backbone
         model.to(self.device)
         if not self.finetune_backbone: model.eval()
         return model
@@ -187,13 +256,20 @@ class ShadowHandCameraEnv(DirectRLEnv):
         embedding_list = []
         backbone = self.backbone if not self.finetune_backbone else self.backbone_ddp
         with context_manager:
+            
             for i in range(0, self.num_envs, self.batch_size):
                 bound = min(self.batch_size+i, self.num_envs)
                 if self.cfg.embedding_model == "theia":
                     embeddings = backbone(self.img[i:bound])[:, 0, :].view(bound-i, -1)
+                elif self.cfg.embedding_model == "custom_enc":
+                    embeddings = backbone(self._tiled_camera.data.output["rgb"][i:bound].clone().contiguous().permute((0, 3, 1, 2)))
+                    embedding_list.append(embeddings)
+                elif self.cfg.embedding_model in ["dino", "vit"]:
+                    embeddings = backbone(transformed_img[i:bound])
+                    embedding_list.append(embeddings)
                 else:
                     embeddings = backbone(transformed_img[i:bound])
-                embedding_list.append(embeddings[:, :, 0, 0])
+                    embedding_list.append(embeddings[:, :, 0, 0])
         self.embeddings = torch.cat(embedding_list, dim=0)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
@@ -225,7 +301,6 @@ class ShadowHandCameraEnv(DirectRLEnv):
         # imgs = self._tiled_camera.data.output["rgb"].clone()
         # np_imgs = (imgs.cpu().numpy()*255).astype(np.uint8)
         # im = Image.fromarray(np_imgs[0])
-        # breakpoint()
         if self.cfg.asymmetric_obs or "rma" in self.cfg.obs_type:
             self.fingertip_force_sensors = self.hand.root_physx_view.get_link_incoming_joint_force()[
                 :, self.finger_bodies
@@ -239,6 +314,8 @@ class ShadowHandCameraEnv(DirectRLEnv):
             self._get_embeddings({"policy": self._tiled_camera.data.output["rgb"].clone()})
             # obs = self.compute_embeddings_observations()
             obs = self.compute_embeddings_observation_no_vel()
+        elif self.cfg.obs_type == "img":
+            obs = self.compute_e2e_obs()
         elif self.cfg.obs_type == "rma_embedding":
             self._get_embeddings({"policy": self._tiled_camera.data.output["rgb"].clone()})
             obs = self.compute_rma_embeddings_observations()
@@ -251,19 +328,29 @@ class ShadowHandCameraEnv(DirectRLEnv):
         observations = {"policy": obs}
         if self.cfg.asymmetric_obs:
             observations = {"policy": obs, "critic": states}
+        if self.cfg.obs_type == "img":
+            observations["img"] = (
+                self._tiled_camera.data.output["rgb"].clone().contiguous().permute((0, 3, 1, 2)) 
+                if self.img_reconstruction else 
+                self._tiled_camera.data.output["rgb"].clone().contiguous()
+            )
         
         if "rma" in self.cfg.obs_type:
             observations["expert_policy"] = self.compute_full_rma_observations()
         else:
             observations["expert_policy"] = self.compute_full_observations()
         self.keypoints = gen_keypoints(pose=torch.cat((self.object_pos, self.object_rot), dim=1))
-        aux_info = {
-            "keypoints": self.keypoints,
-            "obj_vel": torch.cat([self.object_linvel, self.cfg.vel_obs_scale*self.object_angvel], dim=-1),
-            "finger_tip_forces": self.cfg.force_torque_obs_scale * self.fingertip_force_sensors.view(
-                self.num_envs, self.num_fingertips * 6)
-        }
+        if self.img_reconstruction:
+            aux_info = {"img": self._tiled_camera.data.output["rgb"].clone().contiguous().permute((0, 3, 1, 2))}
+        else:
+            aux_info = {
+                "keypoints": self.keypoints,
+                "obj_vel": torch.cat([self.object_linvel, self.cfg.vel_obs_scale * self.object_angvel], dim=-1),
+                # "finger_tip_forces": self.cfg.force_torque_obs_scale * self.fingertip_force_sensors.view(
+                #     self.num_envs, self.num_fingertips * 6)
+            }
         observations["aux_info"] = aux_info
+        observations["disparity"] = 1 / (self._tiled_camera.data.output["depth"] + 1e-8)
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
@@ -278,6 +365,7 @@ class ShadowHandCameraEnv(DirectRLEnv):
             self.successes,
             self.consecutive_successes,
             self.max_episode_length,
+            self.fingertip_pos,
             self.object_pos,
             self.object_rot,
             self.in_hand_pos,
@@ -332,6 +420,23 @@ class ShadowHandCameraEnv(DirectRLEnv):
             env_ids = self.hand._ALL_INDICES
         # resets articulation and rigid body attributes
         super()._reset_idx(env_ids)
+
+        # reset camera
+        if self.randomize_camera_pose:
+            rand_range = 0.1
+            quat_jitter = 0.1
+            random_offsets = torch.rand(len(env_ids), 3) * rand_range*2 - rand_range
+            jittered_positions = torch.tensor(self.camera_pos_center).to(self.device) + random_offsets.to(self.device)
+            quaternions = torch.tensor(self.camera_orientation_center).repeat(len(env_ids), 1).to(self.device)
+            jitter = torch.rand(len(env_ids), 4).to(self.device) * 2*quat_jitter - quat_jitter
+            jittered_quaternions = quaternions + jitter
+            jittered_quaternions = jittered_quaternions / jittered_quaternions.norm(dim=1, keepdim=True)
+            self._tiled_camera.set_world_poses(
+                positions=jittered_positions + self.scene.env_origins[env_ids],
+                orientations=jittered_quaternions,
+                env_ids=env_ids,
+                convention="world"
+            )
 
         # reset goals
         self._reset_target_pose(env_ids)
@@ -482,9 +587,9 @@ class ShadowHandCameraEnv(DirectRLEnv):
                 self.embeddings,
                 # goal
                 self.goal_rot,  # 64:68
-                # fingertips
-                self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),  # 72:87
-                self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),  # 87:107
+                # # fingertips
+                # self.fingertip_pos.view(self.num_envs, self.num_fingertips * 3),  # 72:87
+                # self.fingertip_rot.view(self.num_envs, self.num_fingertips * 4),  # 87:107
                 # actions
                 self.actions,  # 137:157
             ),
@@ -555,6 +660,20 @@ class ShadowHandCameraEnv(DirectRLEnv):
         )
         return obs
 
+    def compute_e2e_obs(self):
+        obs = torch.cat(
+            (
+                # hand
+                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),  # 0:24
+                # goal
+                self.goal_rot,  # 24:28
+                # actions
+                self.actions,  # 28:48
+            ),
+            dim=-1
+        )
+        return obs
+
 
 @torch.jit.script
 def scale(x, lower, upper):
@@ -587,6 +706,7 @@ def compute_rewards(
     successes: torch.Tensor,
     consecutive_successes: torch.Tensor,
     max_episode_length: float,
+    fingertip_pos: torch.Tensor,
     object_pos: torch.Tensor,
     object_rot: torch.Tensor,
     target_pos: torch.Tensor,
@@ -611,8 +731,12 @@ def compute_rewards(
 
     action_penalty = torch.sum(actions**2, dim=-1)
 
+    finger_distances = 0.01*torch.sum(
+        (1 / (0.04+torch.norm((fingertip_pos - object_pos.unsqueeze(1)), p=2, dim=-1))),
+        dim=-1
+    ) / 5
     # Total reward is: position distance + orientation alignment + action regularization + success bonus + fall penalty
-    reward = dist_rew + rot_rew + action_penalty * action_penalty_scale
+    reward = dist_rew + rot_rew + action_penalty * action_penalty_scale + finger_distances
 
     # Find out which envs hit the goal and update successes count
     goal_resets = torch.where(torch.abs(rot_dist) <= success_tolerance, torch.ones_like(reset_goal_buf), reset_goal_buf)
@@ -622,7 +746,7 @@ def compute_rewards(
     reward = torch.where(goal_resets == 1, reward + reach_goal_bonus, reward)
 
     # Fall penalty: distance to the goal is larger than a threshold
-    reward = torch.where(goal_dist >= fall_dist, reward + fall_penalty, reward)
+    # reward = torch.where(goal_dist >= fall_dist, reward + fall_penalty, reward)
 
     # Check env termination conditions, including maximum success number
     resets = torch.where(goal_dist >= fall_dist, torch.ones_like(reset_buf), reset_buf)

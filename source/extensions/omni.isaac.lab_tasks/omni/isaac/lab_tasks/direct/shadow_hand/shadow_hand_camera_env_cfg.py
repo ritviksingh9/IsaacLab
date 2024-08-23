@@ -120,7 +120,10 @@ class ShadowHandCameraEnvCfg(DirectRLEnvCfg):
     num_states = 0
     asymmetric_obs = True
     obs_type = "embedding"
+    # obs_type = "img"
+    img_reconstruction = False
     # obs_type = "rma_embedding"
+    teacher_obs_type = "full"
 
     # simulation
     sim: SimulationCfg = SimulationCfg(
@@ -212,28 +215,40 @@ class ShadowHandCameraEnvCfg(DirectRLEnvCfg):
         }) for i in range(8)]
     # camera
     # 0.7071, 0.0, -0.7071, 0.0
+    randomize_camera_pose = False
+    camera_pos = (0.0, -0.4, 1.8)
+    camera_orientation = (0.7071, 0., 0.7071, 0.)
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
-        offset=TiledCameraCfg.OffsetCfg(pos=(0., -0.4, 1.), rot=(0.7071, 0., 0.7071, 0.), convention="world"),
-        data_types=["rgb"],
+        offset=TiledCameraCfg.OffsetCfg(pos=camera_pos, rot=camera_orientation, convention="world"),
+        data_types=["rgb", "depth"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.01, 20.0)
         ),
         width=224,
         height=224,
     )
-    embedding_model = "resnet"
+    embedding_model = "vit"
     embedding_size = {
         "dino": 384, 
         "resnet": 512, 
         "theia": 192,
         "convnext": 768,
+        "custom_enc": 64,
+        "vit": 768,
     }[embedding_model]
     # num_observations = 137 + embedding_size  # (full)
-    num_observations = 83 + embedding_size #(no velocity information)
-    # num_observations = 48 + embedding_size # rma obs
+    if obs_type == "embedding":
+        # num_observations = 83 + embedding_size  # (no velocity information)
+        num_observations = 48 + embedding_size  # (no velocity information)
+    elif obs_type == "img":
+        num_observations = 48
+    elif obs_type == "rma_embedding":
+        num_observations = 48 + embedding_size  # rma obs
     num_teacher_observations = 157
-    # num_teacher_observations = 180-30
+    if obs_type == "rma_embedding":
+        num_teacher_observations = 180 - 30
+
     finetune_backbone = False
     visualize_marker = False
 
