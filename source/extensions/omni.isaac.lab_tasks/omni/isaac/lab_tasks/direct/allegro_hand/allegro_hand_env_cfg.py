@@ -35,7 +35,7 @@ class EventCfg:
             "asset_cfg": SceneEntityCfg("robot"),
             "static_friction_range": (0.7, 1.3),
             "dynamic_friction_range": (1.0, 1.0),
-            "restitution_range": (1.0, 1.4),
+            "restitution_range": (0.4, 1.0),
             "num_buckets": 250,
         },
     )
@@ -110,7 +110,9 @@ class AllegroHandEnvCfg(DirectRLEnvCfg):
     num_observations = 124  # (full)
     num_states = 0
     # num_envs = 24576
-    num_envs = int(65536 * 3 // 2)
+    # num_envs = int(65536 * 3 // 2)
+    num_envs = 65536
+    # num_envs = 132000
     asymmetric_obs = True
     domain_rand = False
     obs_type = "full"
@@ -199,7 +201,9 @@ class AllegroHandEnvCfg(DirectRLEnvCfg):
     dist_reward_scale = -10.0
     rot_reward_scale = 1.0
     rot_eps = 0.1
-    action_penalty_scale = -0.0002
+    action_penalty_scale = -0.001
+    action_delta_penalty_scale = -0.25
+    vel_penalty_scale = -0.003
     reach_goal_bonus = 250
     fall_penalty = 0
     fall_dist = 0.24

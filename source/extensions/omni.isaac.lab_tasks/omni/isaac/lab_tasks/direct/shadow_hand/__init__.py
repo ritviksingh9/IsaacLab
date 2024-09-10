@@ -72,6 +72,16 @@ gym.register(
 )
 
 gym.register(
+    id="Isaac-Shadow-Hand-Camera-Direct-v0-recon-rl",
+    entry_point="omni.isaac.lab_tasks.direct.shadow_hand:ShadowHandCameraEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": ShadowHandCameraEnvCfg,
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
+    },
+)
+
+gym.register(
     id="Isaac-Shadow-Hand-RMA-Direct-v0",
     entry_point="omni.isaac.lab_tasks.direct.inhand_manipulation:InHandManipulationEnv",
     disable_env_checker=True,

@@ -105,6 +105,7 @@ class InHandManipulationCameraEnv(DirectRLEnv):
         )
         self.num_observations = self.cfg.num_observations
         self.num_teacher_observations = self.cfg.num_teacher_observations
+        self.teacher_observations_type = self.cfg.teacher_obs_type
         self.img = torch.zeros(
             (self.num_envs, self.padded_height, self.padded_width, 3), 
             dtype=torch.float32
@@ -251,6 +252,8 @@ class InHandManipulationCameraEnv(DirectRLEnv):
 
         if "rma" in self.cfg.obs_type:
             observations["expert_policy"] = self.compute_full_rma_observations()
+        elif self.teacher_observations_type == "dextreme":
+            observations["expert_policy"] = self.compute_dextreme_observations()
         else:
             observations["expert_policy"] = self.compute_full_observations()
         self.keypoints = gen_keypoints(pose=torch.cat((self.object_pos, self.object_rot), dim=1))
@@ -553,6 +556,26 @@ class InHandManipulationCameraEnv(DirectRLEnv):
         )
         return obs
 
+    def compute_dextreme_observations(self):
+        object_pos = self.object_pos.clone()
+        object_pos[:, 2] -= 0.04
+        obs = torch.cat(
+            (
+                # hand
+                unscale(self.hand_dof_pos, self.hand_dof_lower_limits, self.hand_dof_upper_limits),
+                # goal
+                object_pos,
+                self.object_rot[:, [1, 2, 3, 0]],
+                torch.tensor([0.1064, 0.0088, 0.0175-0.04]).repeat(self.num_envs, 1).to(self.device),
+                self.goal_rot[:, [1, 2, 3, 0]],
+                quat_mul(self.object_rot[:, [1, 2, 3, 0]], quat_conjugate(self.goal_rot[:, [1, 2, 3, 0]])),
+                # actions
+                self.actions,
+            ),
+            dim=-1
+        )
+        return obs
+
 
 @torch.jit.script
 def scale(x, lower, upper):
@@ -635,6 +658,69 @@ def compute_rewards(
     )
 
     return reward, goal_resets, successes, cons_successes
+
+
+@torch.jit.script
+def compute_rewards_dextreme(
+    reset_buf: torch.Tensor,
+    reset_goal_buf: torch.Tensor,
+    successes: torch.Tensor,
+    consecutive_successes: torch.Tensor,
+    max_episode_length: float,
+    object_pos: torch.Tensor,
+    object_rot: torch.Tensor,
+    target_pos: torch.Tensor,
+    target_rot: torch.Tensor,
+    dist_reward_scale: float,
+    rot_reward_scale: float,
+    rot_eps: float,
+    actions: torch.Tensor,
+    joint_vel: torch.Tensor,
+    vel_penalty_scale: float,
+    action_penalty_scale: float,
+    success_tolerance: float,
+    reach_goal_bonus: float,
+    fall_dist: float,
+    fall_penalty: float,
+    av_factor: float,
+):
+
+    goal_dist = torch.norm(object_pos - target_pos, p=2, dim=-1)
+    rot_dist = rotation_distance(object_rot, target_rot)
+
+    dist_rew = goal_dist * dist_reward_scale
+    rot_rew = 1.0 / (torch.abs(rot_dist) + rot_eps) * rot_reward_scale
+
+    action_penalty_rew = torch.sum(actions**2, dim=-1) * action_penalty_scale
+    joint_vel_penalty_rew = torch.sum(joint_vel**2, dim=-1) * vel_penalty_scale
+
+    # Find out which envs hit the goal and update successes count
+    goal_resets = torch.where(torch.abs(rot_dist) <= success_tolerance, torch.ones_like(reset_goal_buf), reset_goal_buf)
+    successes = successes + goal_resets
+
+    # Total reward is: position distance + orientation alignment + action regularization + success bonus + fall penalty
+    reward = dist_rew + rot_rew + action_penalty_rew + joint_vel_penalty_rew
+
+    # Success bonus: orientation is within `success_tolerance` of goal orientation
+    reward = torch.where(goal_resets == 1, reward + reach_goal_bonus, reward)
+
+    # Fall penalty: distance to the goal is larger than a threshold
+    reward = torch.where(goal_dist >= fall_dist, reward + fall_penalty, reward)
+
+    # Check env termination conditions, including maximum success number
+    resets = torch.where(goal_dist >= fall_dist, torch.ones_like(reset_buf), reset_buf)
+
+    num_resets = torch.sum(resets)
+    finished_cons_successes = torch.sum(successes * resets.float())
+
+    cons_successes = torch.where(
+        num_resets > 0,
+        av_factor * finished_cons_successes / num_resets + (1.0 - av_factor) * consecutive_successes,
+        consecutive_successes,
+    )
+
+    return reward, goal_resets, successes, cons_successes
+
 
 
 @torch.jit.script

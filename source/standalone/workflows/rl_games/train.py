@@ -59,6 +59,7 @@ from omni.isaac.lab_tasks.utils import load_cfg_from_registry, parse_env_cfg
 from omni.isaac.lab_tasks.utils.wrappers.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 
 from a2c_rma import A2CBuilder as A2CWithRMA
+from source.standalone.workflows.distillation.a2c_with_aux_enc import A2CBuilder as A2CWithAuxEncBuilder
 
 
 def main():
@@ -67,6 +68,7 @@ def main():
     args_cli_seed = args_cli.seed
 
     model_builder.register_network("a2c_rma_net_teacher", A2CWithRMA)
+    model_builder.register_network("a2c_enc_net", A2CWithAuxEncBuilder)
 
     # parse configuration
     env_cfg = parse_env_cfg(

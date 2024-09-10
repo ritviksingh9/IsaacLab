@@ -15,7 +15,7 @@ params:
     name: continuous_a2c_logstd
 
   network:
-    name: a2c_aux_net
+    name: a2c_enc_net
     separate: False
 
     space:
@@ -29,7 +29,7 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [512, 512, 256]
+      units: [1024, 512, 256]
       activation: elu
       d2rl: False
 
@@ -44,6 +44,7 @@ params:
       before_mlp: True
       layer_norm: True
     aux_network: 
+      num_supervised_envs: 64
       mlp:
         units: [512, 256]
         activation: elu
@@ -56,10 +57,7 @@ params:
           name: None
 
     aux_outputs:
-      # object_pos: {size: 3}
-      # object_rot: {size: 4}
-      keypoints: {size: 24}
-      object_vel: {size: 6}
+      img: {size: 24}
 
   load_checkpoint: False # flag which sets whether to load the checkpoint
   load_path: '' # path to the checkpoint to load
@@ -102,7 +100,8 @@ params:
     bounds_loss_coef: 0.0001
 
     central_value_config:
-      minibatch_size: 32768
+      # minibatch_size: 32768
+      minibatch_size: 16384
       mini_epochs: 4
       learning_rate: 1e-4
       kl_threshold: 0.016

@@ -345,7 +345,9 @@ class ShadowHandCameraEnv(DirectRLEnv):
         else:
             aux_info = {
                 "keypoints": self.keypoints,
-                "obj_vel": torch.cat([self.object_linvel, self.cfg.vel_obs_scale * self.object_angvel], dim=-1),
+                "object_vel": torch.cat([self.object_linvel, self.object_angvel], dim=-1),
+                "object_pos": self.object_pos,
+                "object_rot": self.object_rot
                 # "finger_tip_forces": self.cfg.force_torque_obs_scale * self.fingertip_force_sensors.view(
                 #     self.num_envs, self.num_fingertips * 6)
             }

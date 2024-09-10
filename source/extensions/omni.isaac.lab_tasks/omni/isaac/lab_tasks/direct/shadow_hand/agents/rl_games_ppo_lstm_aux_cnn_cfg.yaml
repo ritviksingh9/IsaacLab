@@ -15,7 +15,7 @@ params:
     name: continuous_a2c_logstd
 
   network:
-    name: a2c_aux_net
+    name: a2c_aux_cnn_net
     separate: False
 
     space:
@@ -29,7 +29,7 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [512, 512, 256]
+      units: [1024, 512, 256]
       activation: elu
       d2rl: False
 
@@ -56,10 +56,7 @@ params:
           name: None
 
     aux_outputs:
-      # object_pos: {size: 3}
-      # object_rot: {size: 4}
       keypoints: {size: 24}
-      object_vel: {size: 6}
 
   load_checkpoint: False # flag which sets whether to load the checkpoint
   load_path: '' # path to the checkpoint to load

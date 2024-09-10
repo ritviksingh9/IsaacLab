@@ -93,8 +93,9 @@ def main():
         parent_path,
         agent_cfg_folder,
         # "rl_games_ppo_lstm_cfg.yaml"
+        "rl_games_ppo_lstm_aux_cfg.yaml"
         # "rl_games_ppo_lstm_aux_res_cfg.yaml"
-        "rl_games_ppo_lstm_aux_res_add_cfg.yaml"
+        # "rl_games_ppo_lstm_aux_res_add_cfg.yaml"
         # "rl_games_ppo_lstm_aux_cnn_cfg.yaml"
         # "rl_games_ppo_lstm_enc_cfg.yaml"
     )
@@ -109,6 +110,7 @@ def main():
     num_teacher_obs = ov_env.num_teacher_observations
     num_actions = ov_env.num_actions
     student_ckpt = None
+    # student_ckpt = "/home/ritviks/workspace/bc_experiments/sh_online_bc_seed_1/model/nn/sh_250000_iters.pth"
     # student_ckpt = "/home/ritviks/workspace/git/IsaacLab/runs/Shadow-Hand-Camera-Distillation-MGPU_13-23-12-42/nn/sh_95000_iters.pth"
     # student_ckpt = "/home/ritviks/workspace/git/IsaacLab/pretrained_ckpts/enc_dec.pth"
     teacher_ckpt = "pretrained_ckpts/teacher.ckpt"

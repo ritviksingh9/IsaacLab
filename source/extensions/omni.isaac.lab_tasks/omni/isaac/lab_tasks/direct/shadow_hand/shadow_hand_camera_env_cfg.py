@@ -228,7 +228,7 @@ class ShadowHandCameraEnvCfg(DirectRLEnvCfg):
         width=224,
         height=224,
     )
-    embedding_model = "vit"
+    embedding_model = "resnet"
     embedding_size = {
         "dino": 384, 
         "resnet": 512, 

@@ -33,6 +33,8 @@ class AllegroHandCameraEnvCfg(DirectRLEnvCfg):
     num_states = 0
     asymmetric_obs = True
     obs_type = "embedding"
+    teacher_obs_type = "full"
+    # teacher_obs_type = "dextreme"
     # simulation
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 120,
@@ -135,7 +137,7 @@ class AllegroHandCameraEnvCfg(DirectRLEnvCfg):
     }[embedding_model]
 
     num_observations = 64 + embedding_size
-    num_teacher_observations = 124
+    num_teacher_observations = 124 if teacher_obs_type != "dextreme" else 50
     finetune_backbone = False
     visualize_marker = False
 

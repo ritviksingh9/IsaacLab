@@ -104,7 +104,7 @@ class Dagger:
         if self.finetune_backbone:
             params.append({"params": self.ov_env.backbone_ddp.parameters(), "lr": 1e-5, "eps": 1e-8})
         # self.optimizer = torch.optim.Adam(params)
-        self.optimizer = torch.optim.Adam(self.student_model_ddp.parameters(), lr=7e-4, eps=1e-8)
+        self.optimizer = torch.optim.Adam(self.student_model_ddp.parameters(), lr=1e-3, eps=1e-8)
         self.num_warmup_steps = 1000
         self.num_iters = 350000
         def lr_lambda(current_step):
@@ -452,7 +452,6 @@ class Dagger:
         weights = torch_ext.load_checkpoint(ckpt)
         if policy_type == "student":
             model = self.student_model
-            breakpoint()
             # self.epoch_num = weights.get('epoch', 0)
             # self.optimizer.load_state_dict(weights['optimizer'])
             # self.frame = weights.get('frame', 0)
